@@ -135,20 +135,20 @@ public final class DslParser {
             return parsePipeline(new ClassSource(className), tokens, 2, input);
         }
 
-        // ALL <class> TOP n BY retainedSize
-        if (tokens.length >= 6
-                && tokens[2].equalsIgnoreCase("TOP")
-                && tokens[4].equalsIgnoreCase("BY")
-                && tokens[5].equalsIgnoreCase("retainedSize")) {
-            return new AllTopByRetainedSize(className, parseInt(tokens[3], input));
+        // ALL <class> TOP n [BY retainedSize]
+        if (tokens.length >= 4 && tokens[2].equalsIgnoreCase("TOP")) {
+            boolean byOk = tokens.length == 4
+                || (tokens.length >= 6 && tokens[4].equalsIgnoreCase("BY")
+                    && tokens[5].equalsIgnoreCase("retainedSize"));
+            if (byOk) return new AllTopByRetainedSize(className, parseInt(tokens[3], input));
         }
 
-        // ALL <class> BOTTOM n BY retainedSize
-        if (tokens.length >= 6
-                && tokens[2].equalsIgnoreCase("BOTTOM")
-                && tokens[4].equalsIgnoreCase("BY")
-                && tokens[5].equalsIgnoreCase("retainedSize")) {
-            return new AllBottomByRetainedSize(className, parseInt(tokens[3], input));
+        // ALL <class> BOTTOM n [BY retainedSize]
+        if (tokens.length >= 4 && tokens[2].equalsIgnoreCase("BOTTOM")) {
+            boolean byOk = tokens.length == 4
+                || (tokens.length >= 6 && tokens[4].equalsIgnoreCase("BY")
+                    && tokens[5].equalsIgnoreCase("retainedSize"));
+            if (byOk) return new AllBottomByRetainedSize(className, parseInt(tokens[3], input));
         }
 
         // ALL <class> RETAINING op n
@@ -260,19 +260,19 @@ public final class DslParser {
     private static Terminal parseTerminal(String[] tokens, int i, String input) {
         return switch (tokens[i].toUpperCase()) {
             case "TOP" -> {
-                if (i + 3 < tokens.length
-                        && tokens[i + 2].equalsIgnoreCase("BY")
-                        && tokens[i + 3].equalsIgnoreCase("retainedSize")) {
-                    yield new TopNTerminal(parseInt(tokens[i + 1], input));
-                }
+                if (i + 1 >= tokens.length) throw bad(input);
+                boolean byOk = i + 2 >= tokens.length
+                    || (i + 3 < tokens.length && tokens[i + 2].equalsIgnoreCase("BY")
+                        && tokens[i + 3].equalsIgnoreCase("retainedSize"));
+                if (byOk) yield new TopNTerminal(parseInt(tokens[i + 1], input));
                 throw bad(input);
             }
             case "BOTTOM" -> {
-                if (i + 3 < tokens.length
-                        && tokens[i + 2].equalsIgnoreCase("BY")
-                        && tokens[i + 3].equalsIgnoreCase("retainedSize")) {
-                    yield new BottomNTerminal(parseInt(tokens[i + 1], input));
-                }
+                if (i + 1 >= tokens.length) throw bad(input);
+                boolean byOk = i + 2 >= tokens.length
+                    || (i + 3 < tokens.length && tokens[i + 2].equalsIgnoreCase("BY")
+                        && tokens[i + 3].equalsIgnoreCase("retainedSize"));
+                if (byOk) yield new BottomNTerminal(parseInt(tokens[i + 1], input));
                 throw bad(input);
             }
             case "AGGREGATE" -> {
@@ -298,11 +298,11 @@ public final class DslParser {
         }
         int denseId = Integer.parseInt(tokens[2].substring(1));
         int topN = -1;
-        if (tokens.length >= 7
-                && tokens[3].equalsIgnoreCase("TOP")
-                && tokens[5].equalsIgnoreCase("BY")
-                && tokens[6].equalsIgnoreCase("retainedSize")) {
-            topN = Integer.parseInt(tokens[4]);
+        if (tokens.length >= 5 && tokens[3].equalsIgnoreCase("TOP")) {
+            boolean byOk = tokens.length == 5
+                || (tokens.length >= 7 && tokens[5].equalsIgnoreCase("BY")
+                    && tokens[6].equalsIgnoreCase("retainedSize"));
+            if (byOk) topN = Integer.parseInt(tokens[4]);
         }
         return new DominatorSubtree(denseId, topN);
     }

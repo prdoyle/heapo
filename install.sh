@@ -87,13 +87,9 @@ esac
 
 # ── Install steps ─────────────────────────────────────────────────────────────
 
-if check_built; then
-    echo "[✓] Binary already built"
-else
-    echo "[ ] Building heapo..."
-    ./gradlew :cli:installDist
-    echo "[✓] Binary built"
-fi
+echo "[ ] Building heapo..."
+./gradlew :cli:installDist
+echo "[✓] Binary built"
 
 mkdir -p "$BIN_DIR"
 if check_linked; then

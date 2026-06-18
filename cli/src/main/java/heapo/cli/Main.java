@@ -72,15 +72,15 @@ public final class Main implements Runnable {
           WHERE <field> <op> <value>              keep objects whose primitive field satisfies comparison (>, >=, <, <=, =)
 
         Output terminals (materialise the bitset):
-          TOP <n> BY retainedSize                 largest-N objects
-          BOTTOM <n> BY retainedSize              smallest-N objects
+          TOP <n> [BY retainedSize]               largest-N objects
+          BOTTOM <n> [BY retainedSize]            smallest-N objects
           AGGREGATE COUNT                         total count
           AGGREGATE MAX retainedSize              max retained size
           AGGREGATE SUM retainedSize              total retained size
 
         Combined shorthand (source + terminal in one line):
-          ALL <class> TOP <n> BY retainedSize
-          ALL <class> BOTTOM <n> BY retainedSize
+          ALL <class> TOP <n> [BY retainedSize]
+          ALL <class> BOTTOM <n> [BY retainedSize]
           ALL <class> RETAINING > <bytes>         filter by retained size (>, >=, <, <=, =)
           ALL <class> AGGREGATE COUNT|MAX|SUM retainedSize
           TOP <n> BY retainedSize                 across all classes

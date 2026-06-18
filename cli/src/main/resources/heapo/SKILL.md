@@ -110,8 +110,8 @@ Queries compose as: **source** → zero or more **filters** → optional **termi
 
 | Terminal | Returns |
 |---|---|
-| `TOP <n> BY retainedSize` | Largest-N by retained size |
-| `BOTTOM <n> BY retainedSize` | Smallest-N by retained size |
+| `TOP <n> [BY retainedSize]` | Largest-N by retained size |
+| `BOTTOM <n> [BY retainedSize]` | Smallest-N by retained size |
 | `AGGREGATE COUNT` | Total count |
 | `AGGREGATE MAX retainedSize` | Maximum retained size |
 | `AGGREGATE SUM retainedSize` | Sum of retained sizes |
