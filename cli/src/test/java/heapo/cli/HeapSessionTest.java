@@ -462,6 +462,28 @@ class HeapSessionTest {
         }
     }
 
+    // ── Phase: SIZED > n pipeline filter ─────────────────────────────────────
+
+    @Test
+    void sizedFilterByShallowSize() throws Exception {
+        Path p = tempRoot.resolve("sized-filter.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            // All objects sized > 0 bytes should be at most the full set
+            String allCount  = session.execute("ALL * AGGREGATE COUNT");
+            String sizResult = session.execute("ALL * SIZED > 0 AGGREGATE COUNT");
+
+            assertFalse(sizResult.contains("\"error\""), "SIZED filter should succeed: " + sizResult);
+            long allN = Long.parseLong(allCount.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
+            long sizN = Long.parseLong(sizResult.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
+            assertTrue(sizN <= allN, "SIZED > 0 count should not exceed total");
+            assertTrue(sizN >= 0,   "SIZED > 0 count should be non-negative");
+
+            // Nothing has negative size
+            String zeroResult = session.execute("ALL * SIZED > 99999999 AGGREGATE COUNT");
+            assertFalse(zeroResult.contains("\"error\""), "SIZED > huge should succeed: " + zeroResult);
+        }
+    }
+
     // ── Phase: RETAINING > n pipeline filter ─────────────────────────────────
 
     @Test

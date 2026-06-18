@@ -65,6 +65,7 @@ public final class Main implements Runnable {
           RETAINING > <bytes>                     keep objects whose retained size satisfies comparison (>, >=, <, <=, =)
           OF TYPE <class>                         keep objects of class or any subclass
           OF TYPE EXACTLY <class>                 keep objects of exactly that class
+          SIZED > <bytes>                         keep objects whose shallow size satisfies comparison (>, >=, <, <=, =)
 
         Output terminals (materialise the bitset):
           TOP <n> BY retainedSize                 largest-N objects

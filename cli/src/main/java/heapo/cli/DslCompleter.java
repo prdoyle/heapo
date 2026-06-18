@@ -22,7 +22,7 @@ final class DslCompleter implements Completer {
         "SELECT", "WITH", "exit", "quit"
     );
 
-    private static final List<String> PIPELINE_FILTERS = List.of("IN", "NOT", "RETAINED", "RETAINING", "OF");
+    private static final List<String> PIPELINE_FILTERS = List.of("IN", "NOT", "RETAINED", "RETAINING", "OF", "SIZED");
     private static final List<String> BUILTIN_NAMES = List.of(
         "GcRoots", "Threads", "ClassLoaders",
         "SoftReferences", "WeakReferences", "PhantomReferences");
@@ -79,7 +79,7 @@ final class DslCompleter implements Completer {
                 suggest(candidates, partial, List.of("*"));
             }
             case 2 -> suggest(candidates, partial,
-                List.of("TOP", "BOTTOM", "RETAINING", "AGGREGATE", "IN", "NOT", "RETAINED", "OF"));
+                List.of("TOP", "BOTTOM", "RETAINING", "AGGREGATE", "IN", "NOT", "RETAINED", "OF", "SIZED"));
             case 3 -> {
                 String w2 = words.get(2).toUpperCase();
                 if (w2.equals("AGGREGATE"))
@@ -134,8 +134,8 @@ final class DslCompleter implements Completer {
                     && words.get(i + 1).equalsIgnoreCase("BY")) {
                 i += 3; continue; // RETAINED BY <name>
             }
-            if (w.equals("RETAINING") && i + 2 < words.size()) {
-                i += 3; continue; // RETAINING op n
+            if ((w.equals("RETAINING") || w.equals("SIZED")) && i + 2 < words.size()) {
+                i += 3; continue; // RETAINING/SIZED op n
             }
             if (w.equals("OF") && i + 1 < words.size()
                     && words.get(i + 1).equalsIgnoreCase("TYPE")) {

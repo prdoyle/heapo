@@ -371,6 +371,20 @@ public final class HeapSession implements AutoCloseable {
                 for (int i = 0; i < len; i++) result[i] = bits[i] & typeBits[i];
                 yield result;
             }
+            case DslParser.SizedFilter f -> {
+                int objectCount = heap.objectCount();
+                long[] result = new long[bits.length];
+                try (var shallowSize = registry.openShallowSize()) {
+                    for (int v = 0; v < objectCount; v++) {
+                        if ((bits[v >>> 6] >>> (v & 63) & 1L) != 0L) {
+                            long ss = (long) shallowSize.readInt(v) * 8L;
+                            if (matchesOp(ss, f.op(), f.size()))
+                                result[v >>> 6] |= 1L << (v & 63);
+                        }
+                    }
+                }
+                yield result;
+            }
         };
     }
 

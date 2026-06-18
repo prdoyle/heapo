@@ -100,6 +100,7 @@ Queries compose as: **source** → zero or more **filters** → optional **termi
 | `RETAINING > <bytes>` | Keep objects whose retained size satisfies the comparison (`>` `>=` `<` `<=` `=`) |
 | `OF TYPE <class>` | Keep objects whose runtime type is `class` or any subclass |
 | `OF TYPE EXACTLY <class>` | Keep objects whose runtime type is exactly `class` (no subclasses) |
+| `SIZED > <bytes>` | Keep objects whose shallow (own field) size satisfies the comparison |
 
 **Terminals** (materialise results):
 
