@@ -219,6 +219,22 @@ class HeapSessionTest {
         }
     }
 
+    // ── REPL output formatting ────────────────────────────────────────────────
+
+    @Test
+    void replOutputIsHumanFormattedNotJsonl() throws Exception {
+        // Simulate what the REPL loop does: execute then format as HUMAN
+        try (var session = new HeapSession(heap, registry, dbPath)) {
+            String jsonl  = session.execute("ALL * TOP 5 BY retainedSize");
+            String output = OutputFormatter.convert(jsonl, OutputFormatter.Format.HUMAN);
+
+            assertFalse(output.startsWith("{"), "REPL output must not be raw JSONL");
+            assertTrue(output.contains("rank"),         "Human output should have a 'rank' header");
+            assertTrue(output.contains("retainedSize"), "Human output should have a 'retainedSize' header");
+            assertTrue(output.contains("----"),         "Human output should have a separator line");
+        }
+    }
+
     // ── Phase 8: additional DSL operations ───────────────────────────────────
 
     @Test

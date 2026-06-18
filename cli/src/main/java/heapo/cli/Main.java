@@ -128,7 +128,8 @@ public final class Main implements Runnable {
 
                     try {
                         String output = session.execute(trimmed);
-                        if (!output.isEmpty()) System.out.print(output);
+                        if (!output.isEmpty())
+                            System.out.print(OutputFormatter.convert(output, OutputFormatter.Format.HUMAN));
                     } catch (Exception e) {
                         System.err.println("Error: " + e.getMessage());
                     }
