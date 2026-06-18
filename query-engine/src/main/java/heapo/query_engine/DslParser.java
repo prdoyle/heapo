@@ -53,6 +53,8 @@ public final class DslParser {
 
         return switch (tokens[0].toUpperCase()) {
             case "ALL"       -> parseAll(tokens, input);
+            case "TOP"       -> parseAll(withAllAndClass("*", tokens), input);
+            case "BOTTOM"    -> parseAll(withAllAndClass("*", tokens), input);
             case "CLASSES"   -> parseClasses(tokens);
             case "EXPLAIN"   -> parseExplain(tokens);
             case "DOMINATOR" -> parseDominatorSubtree(tokens);
@@ -164,6 +166,15 @@ public final class DslParser {
         } catch (NumberFormatException e) {
             throw bad(ctx);
         }
+    }
+
+    // Turns ["TOP", ...] into ["ALL", className, "TOP", ...] for reuse by parseAll
+    private static String[] withAllAndClass(String className, String[] tokens) {
+        String[] result = new String[tokens.length + 2];
+        result[0] = "ALL";
+        result[1] = className;
+        System.arraycopy(tokens, 0, result, 2, tokens.length);
+        return result;
     }
 
     private static IllegalArgumentException bad(String input) {

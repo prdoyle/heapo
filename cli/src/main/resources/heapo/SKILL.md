@@ -33,7 +33,7 @@ heapo query DUMP --output human CLASSES
 ### 2. Find the biggest memory consumers
 
 ```bash
-heapo query DUMP --output human ALL * TOP 20 BY retainedSize
+heapo query DUMP --output human TOP 20 BY retainedSize
 ```
 
 Identify the classes contributing the most retained memory, then drill in:
@@ -71,8 +71,10 @@ heapo query DUMP --output human ALL java.lang.String RETAINING > 100000
 |---|---|
 | `STATUS` | Object and class count |
 | `CLASSES [MATCHING <glob>]` | All classes sorted by instance count; glob matches dotted class name |
-| `ALL <class> TOP <n> BY retainedSize` | Largest-N instances by retained size |
-| `ALL <class> BOTTOM <n> BY retainedSize` | Smallest-N instances by retained size |
+| `TOP <n> BY retainedSize` | Largest-N objects across all classes |
+| `BOTTOM <n> BY retainedSize` | Smallest-N objects across all classes |
+| `ALL <class> TOP <n> BY retainedSize` | Largest-N instances of a specific class |
+| `ALL <class> BOTTOM <n> BY retainedSize` | Smallest-N instances of a specific class |
 | `ALL <class> RETAINING > <bytes>` | Instances satisfying the comparison (`>` `>=` `<` `<=` `=`) |
 | `ALL <class> AGGREGATE COUNT` | Total instance count |
 | `ALL <class> AGGREGATE MAX retainedSize` | Maximum retained size across all instances |

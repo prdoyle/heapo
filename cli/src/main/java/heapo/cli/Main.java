@@ -43,6 +43,34 @@ public final class Main implements Runnable {
 
     // ── Shared helpers ────────────────────────────────────────────────────────
 
+    static final String REPL_HELP = """
+        DSL queries:
+          STATUS                                  object and class counts
+          CLASSES [MATCHING <glob>]               all classes sorted by instance count
+          TOP <n> BY retainedSize                 largest-N objects across all classes
+          BOTTOM <n> BY retainedSize              smallest-N objects across all classes
+          ALL <class> TOP <n> BY retainedSize     largest-N instances of a class
+          ALL <class> BOTTOM <n> BY retainedSize  smallest-N instances of a class
+          ALL <class> RETAINING > <bytes>         filter by retained size (>, >=, <, <=, =)
+          ALL <class> AGGREGATE COUNT             total instance count
+          ALL <class> AGGREGATE MAX retainedSize  max retained size
+          ALL <class> AGGREGATE SUM retainedSize  total retained size
+          EXPLAIN #<id>                           dominator chain to GC root
+          DOMINATOR SUBTREE OF #<id> [TOP <n>]   all objects retained by #<id>
+          Use * as class name to query all objects.
+
+        Session commands:
+          NAMES                  show all named results
+          CALL THAT <name>       name the last result
+          CALL #<id> <name>      name a specific history entry
+          FORGET <name>          remove a name
+          UNDO                   reverse the last CALL or FORGET
+          HISTORY [<n>]          show recent commands (default 10)
+
+        SQL:  any SELECT … FROM <result_table> … is passed to SQLite
+        exit / quit / Ctrl-D    leave the REPL
+        """;
+
     static Path resolveOutDir(Path hprofFile, Path heapDir) {
         return heapDir != null ? heapDir
              : hprofFile.resolveSibling(hprofFile.getFileName() + ".d");
@@ -92,6 +120,10 @@ public final class Main implements Runnable {
                     if (line == null) break;
                     String trimmed = line.strip();
                     if (trimmed.equalsIgnoreCase("exit") || trimmed.equalsIgnoreCase("quit")) break;
+                    if (trimmed.equalsIgnoreCase("help") || trimmed.equalsIgnoreCase("?")) {
+                        System.out.print(REPL_HELP);
+                        continue;
+                    }
                     if (trimmed.isEmpty()) continue;
 
                     try {
