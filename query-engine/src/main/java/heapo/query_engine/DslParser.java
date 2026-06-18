@@ -21,6 +21,7 @@ import java.util.Set;
 public final class DslParser {
 
     public sealed interface Query permits
+            AllSource,
             AllTopByRetainedSize,
             AllBottomByRetainedSize,
             AllRetaining,
@@ -31,6 +32,8 @@ public final class DslParser {
             DominatorSubtree,
             StatusQuery {}
 
+    /** {@code ALL <class>} — all instances as a bitset source; requires an output terminal to display. */
+    public record AllSource(String className) implements Query {}
     public record AllTopByRetainedSize(String className, int n) implements Query {}
     /** Smallest-retained-size N instances of className. */
     public record AllBottomByRetainedSize(String className, int n) implements Query {}
@@ -64,8 +67,11 @@ public final class DslParser {
     }
 
     private static Query parseAll(String[] tokens, String input) {
-        if (tokens.length < 3) throw bad(input);
+        if (tokens.length < 2) throw bad(input);
         String className = tokens[1];
+
+        // ALL <class> alone — a bitset source with no output terminal
+        if (tokens.length == 2) return new AllSource(className);
 
         // ALL <class> TOP n BY retainedSize
         if (tokens.length >= 6

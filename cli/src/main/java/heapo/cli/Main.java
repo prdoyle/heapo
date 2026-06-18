@@ -93,6 +93,10 @@ public final class Main implements Runnable {
                 description = "Directory for unpacked indexes (default: <hprof>.d/)")
         Path heapDir;
 
+        @Option(names = {"--clean"},
+                description = "Clear history and name bindings at startup (result data is kept)")
+        boolean clean;
+
         @Override
         public Integer call() throws IOException, SQLException {
             Path outDir = resolveOutDir(hprofFile, heapDir);
@@ -105,6 +109,7 @@ public final class Main implements Runnable {
             Path dbPath = outDir.resolve("sql.db");
             try (var terminal = TerminalBuilder.builder().build();
                  var session  = new HeapSession(heap, reg, dbPath)) {
+                if (clean) session.clearSession();
 
                 var reader = LineReaderBuilder.builder()
                     .terminal(terminal)
@@ -184,6 +189,10 @@ public final class Main implements Runnable {
             }
 
             String jsonl = switch (parsed) {
+                case DslParser.AllSource q -> {
+                    long[] bits = QueryEngine.buildBitSet(heap, reg, q.className());
+                    yield JsonlFormatter.formatTopN(QueryEngine.topNFromBitSet(heap, reg, bits, 10));
+                }
                 case DslParser.AllTopByRetainedSize q ->
                     JsonlFormatter.formatTopN(QueryEngine.allTopByRetainedSize(heap, reg, q.className(), q.n()));
                 case DslParser.AllBottomByRetainedSize q ->

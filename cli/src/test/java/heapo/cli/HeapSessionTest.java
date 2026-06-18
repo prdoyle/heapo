@@ -219,6 +219,69 @@ class HeapSessionTest {
         }
     }
 
+    // ── Phase: BitSetAnswer (ALL <class> as standalone source) ────────────────
+
+    @Test
+    void allClassAloneDisplaysTopN() throws Exception {
+        Path p = tempRoot.resolve("bitset-display.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            String result = session.execute("ALL heapo.samples.KnownObjects$Bar");
+            assertFalse(result.contains("\"error\""), "ALL <class> alone should succeed: " + result);
+            assertTrue(result.contains("\"rank\""), "Should display ranked rows");
+        }
+    }
+
+    @Test
+    void allWildcardAloneDisplaysTopN() throws Exception {
+        Path p = tempRoot.resolve("bitset-wildcard.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            String result = session.execute("ALL *");
+            assertFalse(result.contains("\"error\""), "ALL * alone should succeed: " + result);
+            assertTrue(result.contains("\"rank\""), "Should display ranked rows");
+        }
+    }
+
+    @Test
+    void thatAfterAllClassIsBitSet() throws Exception {
+        Path p = tempRoot.resolve("bitset-that.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            String result = session.execute("THAT");
+            assertFalse(result.contains("\"error\""), "THAT after ALL <class> should succeed: " + result);
+            assertTrue(result.contains("\"rank\""), "THAT should show ranked rows");
+        }
+    }
+
+    @Test
+    void callThatOnBitSetAnswerPersistsAcrossRestart() throws Exception {
+        Path p = tempRoot.resolve("bitset-persist.db");
+
+        int targetHistId;
+        try (var session = new HeapSession(heap, registry, p)) {
+            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            String callResult = session.execute("CALL THAT myBars");
+            assertFalse(callResult.contains("\"error\""), "CALL THAT on BitSet should succeed: " + callResult);
+            assertTrue(callResult.contains("myBars"), "Should confirm bound name");
+
+            // Extract historyId from call result to use in new session
+            int idx = callResult.indexOf("\"historyId\":") + "\"historyId\":".length();
+            int end = callResult.indexOf(',', idx);
+            if (end < 0) end = callResult.indexOf('}', idx);
+            targetHistId = Integer.parseInt(callResult.substring(idx, end).trim());
+        }
+
+        // New session — verify bitset survives via @id recall
+        try (var session = new HeapSession(heap, registry, p)) {
+            String names = session.execute("NAMES");
+            assertTrue(names.contains("myBars"), "Name should survive restart");
+
+            String recalled = session.execute("@" + targetHistId);
+            assertFalse(recalled.contains("\"error\""),
+                "Recall of named bitset should succeed after restart: " + recalled);
+            assertTrue(recalled.contains("\"rank\""), "Recalled bitset should show ranked rows");
+        }
+    }
+
     // ── REPL output formatting ────────────────────────────────────────────────
 
     @Test

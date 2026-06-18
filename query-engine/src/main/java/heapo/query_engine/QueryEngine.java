@@ -6,6 +6,7 @@ import heapo.unpack.UnpackedHeap;
 
 import java.io.IOException;
 import java.util.*;
+import java.util.Arrays;
 
 /**
  * Executes heap queries against a built index set.
@@ -337,6 +338,80 @@ public final class QueryEngine {
                 int classDid = classOf.readInt(v);
                 rows.add(new TopNRow(i + 1, v, names.nameOf(classDid),
                     rs, (long) shallowSize.readInt(v) * 8L));
+            }
+        }
+        return rows;
+    }
+
+    /**
+     * Builds a bitset of all instances of {@code className} (or all objects if {@code "*"}).
+     * Bit {@code v} is set iff dense ID {@code v} is in the result set.
+     */
+    public static long[] buildBitSet(UnpackedHeap heap, IndexRegistry registry,
+                                      String className) throws IOException {
+        var names        = ClassNameIndex.load(heap);
+        int objectCount  = heap.objectCount();
+        boolean allObjs  = className.equals("*");
+        int classDenseId = allObjs ? -1 : names.resolve(className);
+
+        int words  = (objectCount + 63) >>> 6;
+        long[] bits = new long[words];
+
+        if (allObjs) {
+            Arrays.fill(bits, -1L);
+            int rem = objectCount & 63;
+            if (rem != 0) bits[words - 1] = (1L << rem) - 1;
+        } else {
+            if (classDenseId < 0) return bits; // class not found → empty
+            try (var il = registry.openInstanceList()) {
+                for (long e = il.start(classDenseId), end = il.end(classDenseId); e < end; e++) {
+                    int v = il.edge(e);
+                    bits[v >>> 6] |= 1L << (v & 63);
+                }
+            }
+        }
+        return bits;
+    }
+
+    /** Returns the number of set bits in {@code bits}. */
+    public static int bitSetCardinality(long[] bits) {
+        int count = 0;
+        for (long word : bits) count += Long.bitCount(word);
+        return count;
+    }
+
+    /**
+     * Returns the top {@code n} objects in the bitset ordered by retained size descending.
+     */
+    public static List<TopNRow> topNFromBitSet(UnpackedHeap heap, IndexRegistry registry,
+                                                long[] bits, int n) throws IOException {
+        var names       = ClassNameIndex.load(heap);
+        int objectCount = heap.objectCount();
+
+        PriorityQueue<int[]> topN = new PriorityQueue<>(n + 1,
+            (a, b) -> Integer.compare(b[1], a[1])); // max-heap by rank
+
+        try (var rank = registry.openRetainedSizeRank()) {
+            for (int v = 0; v < objectCount; v++) {
+                if ((bits[v >>> 6] >>> (v & 63) & 1L) != 0L) {
+                    topN.offer(new int[]{v, rank.readInt(v)});
+                    if (topN.size() > n) topN.poll();
+                }
+            }
+        }
+
+        List<int[]> sorted = new ArrayList<>(topN);
+        sorted.sort(Comparator.comparingInt(a -> a[1]));
+
+        List<TopNRow> rows = new ArrayList<>(sorted.size());
+        try (var retained    = registry.openRetainedSize();
+             var shallowSize = registry.openShallowSize();
+             var classOf     = registry.openClassOf()) {
+            for (int i = 0; i < sorted.size(); i++) {
+                int v        = sorted.get(i)[0];
+                int classDid = classOf.readInt(v);
+                rows.add(new TopNRow(i + 1, v, names.nameOf(classDid),
+                    retained.readLong(v), (long) shallowSize.readInt(v) * 8L));
             }
         }
         return rows;

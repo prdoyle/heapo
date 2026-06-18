@@ -7,9 +7,13 @@ import heapo.session.*;
 import heapo.unpack.UnpackedHeap;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.SQLException;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Top-level session: ties together index access, query execution, history, and THAT.
@@ -26,7 +30,10 @@ public final class HeapSession implements AutoCloseable {
     private final UserTableManager tables;
     private final SqlRouter       sql;
 
-    private Answer that = VoidAnswer.INSTANCE;
+    private Answer that    = VoidAnswer.INSTANCE;
+    private int thatHistId = -1;  // history ID of the command that last set `that`
+
+    private static final int IMPLICIT_DISPLAY_N = 10;
 
     public HeapSession(UnpackedHeap heap, IndexRegistry registry, Path dbPath)
             throws SQLException {
@@ -50,9 +57,12 @@ public final class HeapSession implements AutoCloseable {
 
         // ── Session commands ──────────────────────────────────────────────────
         if (trimmed.equalsIgnoreCase("NAMES")) return handleNames();
-        if (trimmed.equalsIgnoreCase("THAT"))  return that instanceof VoidAnswer
-                                                   ? "{\"error\":\"THAT is empty\"}\n"
-                                                   : handleRecall(thatHistoryId());
+        if (trimmed.equalsIgnoreCase("THAT")) {
+            if (that instanceof VoidAnswer)    return "{\"error\":\"THAT is empty\"}\n";
+            if (that instanceof BitSetAnswer b) return displayBitSet(b.bits());
+            if (that instanceof TableAnswer t)  return sql.selectAsJsonl(t.sqlTableName());
+            return "{\"error\":\"cannot display THAT\"}\n";
+        }
         if (trimmed.equalsIgnoreCase("UNDO"))  return handleUndo();
         if (trimmed.matches("@\\d+"))          return handleRecall(Integer.parseInt(trimmed.substring(1)));
         if (trimmed.matches("(?i)HISTORY(\\s+\\d+)?")) return handleHistory(trimmed);
@@ -67,8 +77,9 @@ public final class HeapSession implements AutoCloseable {
         return handleQuery(trimmed);
     }
 
-    public Answer getThat()       { return that;  }
-    public NamesManager names()   { return names; }
+    public Answer getThat()         { return that;  }
+    public NamesManager names()     { return names; }
+    public void clearSession()      { db.truncateSession(); }
 
     // ── Session command handlers ──────────────────────────────────────────────
 
@@ -101,18 +112,23 @@ public final class HeapSession implements AutoCloseable {
         return sb.toString();
     }
 
-    private String handleCallThat(String cmd) throws SQLException {
+    private String handleCallThat(String cmd) throws IOException, SQLException {
         String name = cmd.split("\\s+")[2];
-        if (that instanceof VoidAnswer) {
-            return "{\"error\":\"THAT is empty\"}\n";
+        if (that instanceof VoidAnswer) return "{\"error\":\"THAT is empty\"}\n";
+
+        int histId = thatHistId;
+
+        // Persist in-memory BitSetAnswer to disk before binding a name to it
+        if (that instanceof BitSetAnswer bsa) {
+            var entry = history.findById(histId);
+            if (entry.isPresent() && entry.get().bitsetFile() == null) {
+                saveBitSetToFile(histId, bsa.bits());
+            }
         }
-        int histId = thatHistoryId();
+
         var displaced = names.bind(name, histId);
-
-        // Record in history
-        int callId = history.record(cmd, System.currentTimeMillis());
+        int callId    = history.record(cmd, System.currentTimeMillis());
         history.setInputs(callId, histId, displaced.orElse(null));
-
         return "{\"bound\":\"" + escJson(name) + "\",\"historyId\":" + histId + "}\n";
     }
 
@@ -142,7 +158,8 @@ public final class HeapSession implements AutoCloseable {
     private String handleRecall(int histId) throws IOException, SQLException {
         var entry = history.findById(histId);
         if (entry.isEmpty()) return "{\"error\":\"No history entry @" + histId + "\"}\n";
-        if (entry.get().sqlTable() != null) return sql.selectAsJsonl(entry.get().sqlTable());
+        if (entry.get().sqlTable() != null)   return sql.selectAsJsonl(entry.get().sqlTable());
+        if (entry.get().bitsetFile() != null) return displayBitSet(loadBitSetFromFile(entry.get().bitsetFile()));
         return handleQuery(entry.get().command());
     }
 
@@ -184,6 +201,7 @@ public final class HeapSession implements AutoCloseable {
             TableAnswer answer = sql.execute(cmd);
             history.setSqlTable(histId, answer.sqlTableName());
             that = answer;
+            thatHistId = histId;
             return "{\"sqlTable\":\"" + escJson(answer.sqlTableName())
                 + "\",\"rowCount\":" + answer.rowCount() + "}\n";
         } catch (Exception e) {
@@ -202,12 +220,20 @@ public final class HeapSession implements AutoCloseable {
         int histId = history.record(cmd, System.currentTimeMillis());
 
         return switch (parsed) {
+            case DslParser.AllSource q -> {
+                long[] bits = QueryEngine.buildBitSet(heap, registry, q.className());
+                that = new BitSetAnswer(bits, heap.objectCount());
+                thatHistId = histId;
+                // bitset_file is null until CALL THAT names it; display top N
+                yield displayBitSet(bits);
+            }
             case DslParser.AllTopByRetainedSize q -> {
                 List<TopNRow> rows =
                     QueryEngine.allTopByRetainedSize(heap, registry, q.className(), q.n());
                 String tableName = tables.writeTopNResult(rows);
                 history.setSqlTable(histId, tableName);
                 that = new TableAnswer(tableName, rows.size());
+                thatHistId = histId;
                 yield JsonlFormatter.formatTopN(rows);
             }
             case DslParser.AllBottomByRetainedSize q -> {
@@ -216,6 +242,7 @@ public final class HeapSession implements AutoCloseable {
                 String tableName = tables.writeTopNResult(rows);
                 history.setSqlTable(histId, tableName);
                 that = new TableAnswer(tableName, rows.size());
+                thatHistId = histId;
                 yield JsonlFormatter.formatTopN(rows);
             }
             case DslParser.AllRetaining q -> {
@@ -224,6 +251,7 @@ public final class HeapSession implements AutoCloseable {
                 String tableName = tables.writeTopNResult(rows);
                 history.setSqlTable(histId, tableName);
                 that = new TableAnswer(tableName, rows.size());
+                thatHistId = histId;
                 yield JsonlFormatter.formatTopN(rows);
             }
             case DslParser.AggregateCount q -> {
@@ -249,6 +277,7 @@ public final class HeapSession implements AutoCloseable {
                 String tableName = tables.writeTopNResult(rows);
                 history.setSqlTable(histId, tableName);
                 that = new TableAnswer(tableName, rows.size());
+                thatHistId = histId;
                 yield JsonlFormatter.formatTopN(rows);
             }
             case DslParser.StatusQuery ignored -> {
@@ -259,11 +288,29 @@ public final class HeapSession implements AutoCloseable {
         };
     }
 
-    // THAT's history id: the most recent entry with a sql_table or bitset_file
-    private int thatHistoryId() {
-        return history.lastWithStorage()
-            .map(HistoryManager.Entry::id)
-            .orElseThrow(() -> new IllegalStateException("No stored result for THAT"));
+    // ── Bitset helpers ────────────────────────────────────────────────────────
+
+    private String displayBitSet(long[] bits) throws IOException {
+        var rows = QueryEngine.topNFromBitSet(heap, registry, bits, IMPLICIT_DISPLAY_N);
+        return JsonlFormatter.formatTopN(rows);
+    }
+
+    private void saveBitSetToFile(int histId, long[] bits) throws IOException {
+        Path dir = heap.bitsetsDir();
+        Files.createDirectories(dir);
+        String filename = UUID.randomUUID() + ".bin";
+        ByteBuffer buf = ByteBuffer.allocate(bits.length * 8).order(ByteOrder.LITTLE_ENDIAN);
+        for (long word : bits) buf.putLong(word);
+        Files.write(dir.resolve(filename), buf.array());
+        history.setBitsetFile(histId, filename);
+    }
+
+    private long[] loadBitSetFromFile(String filename) throws IOException {
+        byte[] bytes = Files.readAllBytes(heap.bitsetsDir().resolve(filename));
+        ByteBuffer buf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+        long[] bits = new long[bytes.length / 8];
+        for (int i = 0; i < bits.length; i++) bits[i] = buf.getLong();
+        return bits;
     }
 
     private static String escJson(String s) {

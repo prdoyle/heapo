@@ -13,14 +13,16 @@ import java.sql.SQLException;
 /** SQLite connection + schema lifecycle for the heapo session database. */
 public final class SessionDb implements AutoCloseable {
 
-    private final Connection     conn;
-    private final HistoryManager history;
-    private final NamesManager   names;
-    private final UserTableManager tables;
-    private final SqlRouter      sql;
+    private final Connection        conn;
+    private final DSLContext        ctx;
+    private final HistoryManager    history;
+    private final NamesManager      names;
+    private final UserTableManager  tables;
+    private final SqlRouter         sql;
 
     private SessionDb(Connection conn, DSLContext ctx) {
         this.conn    = conn;
+        this.ctx     = ctx;
         this.history = new HistoryManager(ctx);
         this.names   = new NamesManager(ctx);
         this.tables  = new UserTableManager(ctx);
@@ -39,6 +41,12 @@ public final class SessionDb implements AutoCloseable {
     public NamesManager      names()   { return names;   }
     public UserTableManager  tables()  { return tables;  }
     public SqlRouter         sql()     { return sql;     }
+
+    /** Clears all session history and name bindings. Result tables and bitset files are left on disk. */
+    public void truncateSession() {
+        ctx.truncate(DSL.table(DSL.name("names"))).execute();
+        ctx.truncate(DSL.table(DSL.name("history"))).execute();
+    }
 
     private static void createSchema(DSLContext ctx) {
         ctx.createTableIfNotExists("history")

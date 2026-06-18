@@ -8,5 +8,6 @@ import java.nio.file.Path;
  */
 public record UnpackedHeap(Path outputDir, int objectCount, int classCount) {
 
-    public Path indexDir() { return outputDir.resolve("indexes"); }
+    public Path indexDir()   { return outputDir.resolve("indexes"); }
+    public Path bitsetsDir() { return outputDir.resolve("bitsets"); }
 }
