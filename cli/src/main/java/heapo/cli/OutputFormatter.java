@@ -57,7 +57,7 @@ final class OutputFormatter {
         // Header
         for (int i = 0; i < cols.size(); i++) {
             if (i > 0) sb.append("  ");
-            sb.append(pad(cols.get(i), widths[i]));
+            sb.append(pad(cols.get(i), widths[i], NUMERIC_COLS.contains(cols.get(i))));
         }
         sb.append('\n');
         // Separator
@@ -70,16 +70,20 @@ final class OutputFormatter {
         for (var row : rows) {
             for (int i = 0; i < cols.size(); i++) {
                 if (i > 0) sb.append("  ");
-                sb.append(pad(row.getOrDefault(cols.get(i), ""), widths[i]));
+                sb.append(pad(row.getOrDefault(cols.get(i), ""), widths[i], NUMERIC_COLS.contains(cols.get(i))));
             }
             sb.append('\n');
         }
         return sb.toString();
     }
 
-    private static String pad(String s, int width) {
-        if (s.length() >= width) return s;
-        return s + " ".repeat(width - s.length());
+    private static final Set<String> NUMERIC_COLS =
+        Set.of("rank", "retainedSize", "shallowSize", "depth", "instanceCount", "count");
+
+    private static String pad(String s, int width, boolean rightAlign) {
+        int pad = width - s.length();
+        if (pad <= 0) return s;
+        return rightAlign ? " ".repeat(pad) + s : s + " ".repeat(pad);
     }
 
     // Very simple JSONL parser: handles flat objects with string/number values only.
