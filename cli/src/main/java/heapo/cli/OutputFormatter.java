@@ -39,8 +39,11 @@ final class OutputFormatter {
         List<Map<String, String>> rows = parseJsonl(jsonl);
         if (rows.isEmpty()) return "(no results)\n";
 
-        // Determine columns from the first row's keys
-        List<String> cols = new ArrayList<>(rows.get(0).keySet());
+        // Determine columns from the union of all rows' keys (preserving first-seen order)
+        List<String> cols = new ArrayList<>();
+        for (var row : rows)
+            for (var key : row.keySet())
+                if (!cols.contains(key)) cols.add(key);
 
         // Compute column widths
         int[] widths = new int[cols.size()];

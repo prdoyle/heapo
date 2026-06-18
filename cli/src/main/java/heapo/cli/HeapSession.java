@@ -89,8 +89,10 @@ public final class HeapSession implements AutoCloseable {
         for (var e : entries) {
             sb.append("{\"id\":\"@").append(e.id()).append('"')
               .append(",\"command\":\"").append(escJson(e.command())).append('"')
-              .append(",\"timestamp\":").append(e.timestamp())
-              .append("}\n");
+              .append(",\"timestamp\":").append(e.timestamp());
+            if (e.input1() != null) sb.append(",\"input1\":\"@").append(e.input1()).append('"');
+            if (e.input2() != null) sb.append(",\"input2\":\"@").append(e.input2()).append('"');
+            sb.append("}\n");
         }
         return sb.toString();
     }
