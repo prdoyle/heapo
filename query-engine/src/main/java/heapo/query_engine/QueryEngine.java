@@ -374,6 +374,57 @@ public final class QueryEngine {
     }
 
     /**
+     * Builds a bitset of all objects whose runtime class is {@code className} or, when
+     * {@code exactly} is {@code false}, any subclass of it.
+     *
+     * <p>The {@code exactly=true} path is identical to {@link #buildBitSet}.
+     * The {@code exactly=false} path traverses {@code super-class-of.bin} to find
+     * all transitive subclasses, then unions their instance lists.
+     */
+    public static long[] buildOfTypeBitSet(UnpackedHeap heap, IndexRegistry registry,
+                                            String className, boolean exactly) throws IOException {
+        if (exactly) return buildBitSet(heap, registry, className);
+
+        var names = ClassNameIndex.load(heap);
+        int targetId = names.resolve(className);
+        if (targetId < 0) return new long[(heap.objectCount() + 63) >>> 6]; // class not found
+
+        // Build classId → superclassId map for all known classes
+        Map<Integer, Integer> parentOf = new HashMap<>();
+        try (var superOf = registry.openSuperClassOf()) {
+            for (int classId : names.allClassDenseIds()) {
+                int superClassId = superOf.readInt(classId);
+                if (superClassId != 0) parentOf.put(classId, superClassId);
+            }
+        }
+
+        // BFS to collect all subclasses of targetId (including itself)
+        var subclasses = new HashSet<Integer>();
+        subclasses.add(targetId);
+        boolean added = true;
+        while (added) {
+            added = false;
+            for (var entry : parentOf.entrySet()) {
+                if (subclasses.contains(entry.getValue()) && subclasses.add(entry.getKey()))
+                    added = true;
+            }
+        }
+
+        // Union instance lists of all subclasses
+        int objectCount = heap.objectCount();
+        long[] bits = new long[(objectCount + 63) >>> 6];
+        try (var il = registry.openInstanceList()) {
+            for (int classId : subclasses) {
+                for (long e = il.start(classId), end = il.end(classId); e < end; e++) {
+                    int v = il.edge(e);
+                    bits[v >>> 6] |= 1L << (v & 63);
+                }
+            }
+        }
+        return bits;
+    }
+
+    /**
      * Returns a bitset for one of the well-known built-in names, or {@code null} if
      * {@code name} is not a built-in.
      *

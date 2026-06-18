@@ -50,4 +50,9 @@ public final class ClassNameIndex {
     public Collection<String> allDottedNames() {
         return Collections.unmodifiableCollection(denseIdToDottedName.values());
     }
+
+    /** All dense class IDs (== the class object's dense ID in the object array). */
+    public Set<Integer> allClassDenseIds() {
+        return Collections.unmodifiableSet(denseIdToDottedName.keySet());
+    }
 }

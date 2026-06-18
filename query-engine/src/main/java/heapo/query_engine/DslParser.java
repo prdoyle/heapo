@@ -30,13 +30,18 @@ public final class DslParser {
     public record NameSource(String name)       implements Source {}
     public record ThatSource()                  implements Source {}
 
-    public sealed interface Filter permits InFilter, NotInFilter, RetainedByFilter, RetainingFilter {}
+    public sealed interface Filter permits InFilter, NotInFilter, RetainedByFilter, RetainingFilter, OfTypeFilter {}
     public record InFilter(String name)         implements Filter {}
     public record NotInFilter(String name)      implements Filter {}
     /** Keep only objects in the dominator subtree of any object in the named bitset. */
     public record RetainedByFilter(String name) implements Filter {}
     /** Keep only objects whose retained size satisfies the comparison. */
     public record RetainingFilter(String op, long size) implements Filter {}
+    /**
+     * Keep only objects whose runtime class is {@code className} or any subclass.
+     * When {@code exactly=true}, only the exact class is matched (no subclasses).
+     */
+    public record OfTypeFilter(String className, boolean exactly) implements Filter {}
 
     public sealed interface Terminal permits TopNTerminal, BottomNTerminal,
                                               AggregateCountTerminal, AggregateRetainedSizeTerminal {}
@@ -114,7 +119,9 @@ public final class DslParser {
                     && tokens[3].equalsIgnoreCase("IN"))
                 || (tokens[2].equalsIgnoreCase("RETAINED") && tokens.length > 4
                     && tokens[3].equalsIgnoreCase("BY")
-                    && !tokens[4].startsWith("#"))) {
+                    && !tokens[4].startsWith("#"))
+                || (tokens[2].equalsIgnoreCase("OF") && tokens.length > 4
+                    && tokens[3].equalsIgnoreCase("TYPE"))) {
             return parsePipeline(new ClassSource(className), tokens, 2, input);
         }
 
@@ -196,6 +203,16 @@ public final class DslParser {
                 long size = parseLong(tokens[idx + 2], input);
                 filters.add(new RetainingFilter(tokens[idx + 1], size));
                 idx += 3;
+            } else if (tokens[idx].equalsIgnoreCase("OF")
+                    && idx + 2 < tokens.length
+                    && tokens[idx + 1].equalsIgnoreCase("TYPE")) {
+                if (tokens[idx + 2].equalsIgnoreCase("EXACTLY") && idx + 3 < tokens.length) {
+                    filters.add(new OfTypeFilter(tokens[idx + 3], true));
+                    idx += 4;
+                } else {
+                    filters.add(new OfTypeFilter(tokens[idx + 2], false));
+                    idx += 3;
+                }
             } else {
                 break;
             }

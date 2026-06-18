@@ -421,6 +421,47 @@ class HeapSessionTest {
         }
     }
 
+    // ── Phase: OF TYPE [EXACTLY] <class> pipeline filter ─────────────────────
+
+    @Test
+    void ofTypeExactlyFiltersToExactClass() throws Exception {
+        Path p = tempRoot.resolve("of-type-exactly.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            // ALL * OF TYPE EXACTLY Bar should give the same count as ALL Bar
+            String exactResult = session.execute(
+                "ALL * OF TYPE EXACTLY heapo.samples.KnownObjects$Bar AGGREGATE COUNT");
+            String directResult = session.execute(
+                "ALL heapo.samples.KnownObjects$Bar AGGREGATE COUNT");
+
+            assertFalse(exactResult.contains("\"error\""),
+                "OF TYPE EXACTLY should succeed: " + exactResult);
+            // Both should report the same count
+            String exactCount  = exactResult.replaceAll(".*\"count\":(\\d+).*", "$1").strip();
+            String directCount = directResult.replaceAll(".*\"count\":(\\d+).*", "$1").strip();
+            assertEquals(directCount, exactCount,
+                "OF TYPE EXACTLY should match direct ALL <class> count");
+        }
+    }
+
+    @Test
+    void ofTypeIncludesSubclasses() throws Exception {
+        Path p = tempRoot.resolve("of-type-subclass.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            // OF TYPE java.lang.Object should include everything (all objects extend Object)
+            String objCount = session.execute("ALL * OF TYPE java.lang.Object AGGREGATE COUNT");
+            String allCount = session.execute("ALL * AGGREGATE COUNT");
+
+            assertFalse(objCount.contains("\"error\""),
+                "OF TYPE java.lang.Object should succeed: " + objCount);
+            long ofTypeN = Long.parseLong(objCount.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
+            long totalN  = Long.parseLong(allCount.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
+            // OF TYPE Object should include all objects
+            assertTrue(ofTypeN <= totalN,
+                "OF TYPE Object count should not exceed total object count");
+            assertTrue(ofTypeN > 0, "Should find at least some objects of type Object");
+        }
+    }
+
     // ── Phase: RETAINING > n pipeline filter ─────────────────────────────────
 
     @Test

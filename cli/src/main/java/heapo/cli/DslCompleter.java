@@ -22,7 +22,7 @@ final class DslCompleter implements Completer {
         "SELECT", "WITH", "exit", "quit"
     );
 
-    private static final List<String> PIPELINE_FILTERS = List.of("IN", "NOT", "RETAINED", "RETAINING");
+    private static final List<String> PIPELINE_FILTERS = List.of("IN", "NOT", "RETAINED", "RETAINING", "OF");
     private static final List<String> BUILTIN_NAMES = List.of(
         "GcRoots", "Threads", "ClassLoaders",
         "SoftReferences", "WeakReferences", "PhantomReferences");
@@ -79,7 +79,7 @@ final class DslCompleter implements Completer {
                 suggest(candidates, partial, List.of("*"));
             }
             case 2 -> suggest(candidates, partial,
-                List.of("TOP", "BOTTOM", "RETAINING", "AGGREGATE", "IN", "NOT", "RETAINED"));
+                List.of("TOP", "BOTTOM", "RETAINING", "AGGREGATE", "IN", "NOT", "RETAINED", "OF"));
             case 3 -> {
                 String w2 = words.get(2).toUpperCase();
                 if (w2.equals("AGGREGATE"))
@@ -136,6 +136,12 @@ final class DslCompleter implements Completer {
             }
             if (w.equals("RETAINING") && i + 2 < words.size()) {
                 i += 3; continue; // RETAINING op n
+            }
+            if (w.equals("OF") && i + 1 < words.size()
+                    && words.get(i + 1).equalsIgnoreCase("TYPE")) {
+                // OF TYPE [EXACTLY] <class> — 3 or 4 tokens
+                int advance = (i + 2 < words.size() && words.get(i + 2).equalsIgnoreCase("EXACTLY")) ? 4 : 3;
+                i += advance; continue;
             }
             // Must be a terminal keyword — don't suggest more
             return;

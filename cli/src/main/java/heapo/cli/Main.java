@@ -63,6 +63,8 @@ public final class Main implements Runnable {
           NOT IN <name>                           bitset AND-NOT — exclude objects in set
           RETAINED BY <name>                      keep objects dominated by any object in set
           RETAINING > <bytes>                     keep objects whose retained size satisfies comparison (>, >=, <, <=, =)
+          OF TYPE <class>                         keep objects of class or any subclass
+          OF TYPE EXACTLY <class>                 keep objects of exactly that class
 
         Output terminals (materialise the bitset):
           TOP <n> BY retainedSize                 largest-N objects
@@ -227,7 +229,7 @@ public final class Main implements Runnable {
                     }
                     var cs   = (DslParser.ClassSource) p.source();
                     long[] b = QueryEngine.buildBitSet(heap, reg, cs.className());
-                    // Apply session-independent filters (RetainingFilter only for now)
+                    // Apply session-independent filters
                     for (var filter : p.filters()) {
                         if (filter instanceof DslParser.RetainingFilter f) {
                             int objectCount = heap.objectCount();
@@ -248,6 +250,12 @@ public final class Main implements Runnable {
                                     }
                                 }
                             }
+                            b = result;
+                        } else if (filter instanceof DslParser.OfTypeFilter f) {
+                            long[] typeBits = QueryEngine.buildOfTypeBitSet(heap, reg, f.className(), f.exactly());
+                            long[] result = new long[b.length];
+                            int len = Math.min(b.length, typeBits.length);
+                            for (int i = 0; i < len; i++) result[i] = b[i] & typeBits[i];
                             b = result;
                         }
                     }

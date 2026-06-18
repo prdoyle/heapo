@@ -98,6 +98,8 @@ Queries compose as: **source** → zero or more **filters** → optional **termi
 | `NOT IN <name>` | Bitset AND-NOT — exclude objects present in the named set |
 | `RETAINED BY <name>` | Keep objects dominated (exclusively retained) by any object in the named set |
 | `RETAINING > <bytes>` | Keep objects whose retained size satisfies the comparison (`>` `>=` `<` `<=` `=`) |
+| `OF TYPE <class>` | Keep objects whose runtime type is `class` or any subclass |
+| `OF TYPE EXACTLY <class>` | Keep objects whose runtime type is exactly `class` (no subclasses) |
 
 **Terminals** (materialise results):
 
