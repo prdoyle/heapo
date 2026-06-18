@@ -85,8 +85,8 @@ public final class Main implements Runnable {
           RETAINED BY #<id> [TOP <n> BY retainedSize]   objects retained by #<id>
 
         Session commands:
-          NAMES                  show all named results
-          CALL THAT <name>       name the last result (persists a bitset to disk)
+          NAMES [MATCHING <glob>]  show named results (optionally filtered)
+          CALL THAT <name>         name the last result (persists a bitset to disk)
           CALL @<id> <name>      name a specific history entry
           FORGET <name>          remove a name
           UNDO                   reverse the last CALL or FORGET

@@ -53,7 +53,7 @@ final class DslCompleter implements Completer {
         switch (w0) {
             case "ALL"  -> completeAll(words, wordIndex, partial, candidates);
             case "FROM" -> completeFrom(words, wordIndex, partial, candidates);
-            case "CLASSES" -> {
+            case "CLASSES", "NAMES" -> {
                 if (wordIndex == 1) suggest(candidates, partial, List.of("MATCHING"));
             }
             case "EXPLAIN" -> {

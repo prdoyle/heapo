@@ -361,6 +361,29 @@ class HeapSessionTest {
         }
     }
 
+    // ── Phase: NAMES MATCHING ─────────────────────────────────────────────────
+
+    @Test
+    void namesMatchingFiltersResults() throws Exception {
+        Path p = tempRoot.resolve("names-matching.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CALL THAT alphaSet");
+            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CALL THAT betaSet");
+
+            String all     = session.execute("NAMES");
+            String matched = session.execute("NAMES MATCHING alpha*");
+            String none    = session.execute("NAMES MATCHING zzzNone*");
+
+            assertTrue(all.contains("alphaSet"), "NAMES should list alphaSet");
+            assertTrue(all.contains("betaSet"),  "NAMES should list betaSet");
+            assertTrue(matched.contains("alphaSet"),  "NAMES MATCHING alpha* should include alphaSet");
+            assertFalse(matched.contains("betaSet"),  "NAMES MATCHING alpha* should exclude betaSet");
+            assertTrue(none.contains("\"names\":[]"), "No-match pattern should return empty list");
+        }
+    }
+
     // ── Phase: built-in names ─────────────────────────────────────────────────
 
     @Test

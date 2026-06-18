@@ -56,7 +56,7 @@ public final class HeapSession implements AutoCloseable {
         if (trimmed.isEmpty()) return "";
 
         // ── Session commands ──────────────────────────────────────────────────
-        if (trimmed.equalsIgnoreCase("NAMES")) return handleNames();
+        if (trimmed.matches("(?i)NAMES(\\s+MATCHING\\s+\\S+)?")) return handleNames(trimmed);
         if (trimmed.equalsIgnoreCase("THAT")) {
             if (that instanceof VoidAnswer)    return "{\"error\":\"THAT is empty\"}\n";
             if (that instanceof BitSetAnswer b) return displayBitSet(b.bits());
@@ -83,15 +83,22 @@ public final class HeapSession implements AutoCloseable {
 
     // ── Session command handlers ──────────────────────────────────────────────
 
-    private String handleNames() {
+    private String handleNames(String cmd) {
+        String[] parts = cmd.strip().split("\\s+");
+        String glob = parts.length >= 3 && parts[1].equalsIgnoreCase("MATCHING") ? parts[2] : null;
         var all = names.all();
-        if (all.isEmpty()) return "{\"names\":[]}\n";
         var sb = new StringBuilder();
         for (var e : all.entrySet()) {
-            sb.append("{\"name\":\"").append(escJson(e.getKey()))
-              .append("\",\"historyId\":").append(e.getValue()).append("}\n");
+            if (glob == null || matchNameGlob(e.getKey(), glob)) {
+                sb.append("{\"name\":\"").append(escJson(e.getKey()))
+                  .append("\",\"historyId\":").append(e.getValue()).append("}\n");
+            }
         }
-        return sb.toString();
+        return sb.isEmpty() ? "{\"names\":[]}\n" : sb.toString();
+    }
+
+    private static boolean matchNameGlob(String name, String glob) {
+        return name.matches(glob.replace(".", "\\.").replace("*", ".*").replace("?", "."));
     }
 
     private String handleHistory(String cmd) {
