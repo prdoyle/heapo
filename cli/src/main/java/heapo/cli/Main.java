@@ -62,6 +62,7 @@ public final class Main implements Runnable {
           IN <name>                               bitset AND — keep objects in both sets
           NOT IN <name>                           bitset AND-NOT — exclude objects in set
           RETAINED BY <name>                      keep objects dominated by any object in set
+          RETAINING > <bytes>                     keep objects whose retained size satisfies comparison (>, >=, <, <=, =)
 
         Output terminals (materialise the bitset):
           TOP <n> BY retainedSize                 largest-N objects
@@ -226,6 +227,30 @@ public final class Main implements Runnable {
                     }
                     var cs   = (DslParser.ClassSource) p.source();
                     long[] b = QueryEngine.buildBitSet(heap, reg, cs.className());
+                    // Apply session-independent filters (RetainingFilter only for now)
+                    for (var filter : p.filters()) {
+                        if (filter instanceof DslParser.RetainingFilter f) {
+                            int objectCount = heap.objectCount();
+                            long[] result = new long[b.length];
+                            try (var retainedSize = reg.openRetainedSize()) {
+                                for (int v = 0; v < objectCount; v++) {
+                                    if ((b[v >>> 6] >>> (v & 63) & 1L) != 0L) {
+                                        long rs = retainedSize.readLong(v);
+                                        boolean matches = switch (f.op()) {
+                                            case ">"  -> rs >  f.size();
+                                            case ">=" -> rs >= f.size();
+                                            case "<"  -> rs <  f.size();
+                                            case "<=" -> rs <= f.size();
+                                            case "="  -> rs == f.size();
+                                            default   -> false;
+                                        };
+                                        if (matches) result[v >>> 6] |= 1L << (v & 63);
+                                    }
+                                }
+                            }
+                            b = result;
+                        }
+                    }
                     yield switch (p.terminal()) {
                         case null                                       ->
                             JsonlFormatter.formatTopN(QueryEngine.topNFromBitSet(heap, reg, b, 10));

@@ -22,7 +22,7 @@ final class DslCompleter implements Completer {
         "SELECT", "WITH", "exit", "quit"
     );
 
-    private static final List<String> PIPELINE_FILTERS = List.of("IN", "NOT", "RETAINED");
+    private static final List<String> PIPELINE_FILTERS = List.of("IN", "NOT", "RETAINED", "RETAINING");
     private static final List<String> BUILTIN_NAMES = List.of(
         "GcRoots", "Threads", "ClassLoaders",
         "SoftReferences", "WeakReferences", "PhantomReferences");
@@ -133,6 +133,9 @@ final class DslCompleter implements Completer {
             if (w.equals("RETAINED") && i + 1 < words.size()
                     && words.get(i + 1).equalsIgnoreCase("BY")) {
                 i += 3; continue; // RETAINED BY <name>
+            }
+            if (w.equals("RETAINING") && i + 2 < words.size()) {
+                i += 3; continue; // RETAINING op n
             }
             // Must be a terminal keyword — don't suggest more
             return;

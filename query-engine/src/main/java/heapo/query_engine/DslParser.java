@@ -30,11 +30,13 @@ public final class DslParser {
     public record NameSource(String name)       implements Source {}
     public record ThatSource()                  implements Source {}
 
-    public sealed interface Filter permits InFilter, NotInFilter, RetainedByFilter {}
-    public record InFilter(String name)       implements Filter {}
-    public record NotInFilter(String name)    implements Filter {}
+    public sealed interface Filter permits InFilter, NotInFilter, RetainedByFilter, RetainingFilter {}
+    public record InFilter(String name)         implements Filter {}
+    public record NotInFilter(String name)      implements Filter {}
     /** Keep only objects in the dominator subtree of any object in the named bitset. */
     public record RetainedByFilter(String name) implements Filter {}
+    /** Keep only objects whose retained size satisfies the comparison. */
+    public record RetainingFilter(String op, long size) implements Filter {}
 
     public sealed interface Terminal permits TopNTerminal, BottomNTerminal,
                                               AggregateCountTerminal, AggregateRetainedSizeTerminal {}
@@ -187,6 +189,12 @@ public final class DslParser {
                     && tokens[idx + 1].equalsIgnoreCase("BY")
                     && !tokens[idx + 2].startsWith("#")) {
                 filters.add(new RetainedByFilter(tokens[idx + 2]));
+                idx += 3;
+            } else if (tokens[idx].equalsIgnoreCase("RETAINING")
+                    && idx + 2 < tokens.length
+                    && Set.of(">", ">=", "<", "<=", "=").contains(tokens[idx + 1])) {
+                long size = parseLong(tokens[idx + 2], input);
+                filters.add(new RetainingFilter(tokens[idx + 1], size));
                 idx += 3;
             } else {
                 break;

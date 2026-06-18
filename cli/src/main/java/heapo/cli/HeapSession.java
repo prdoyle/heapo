@@ -350,6 +350,31 @@ public final class HeapSession implements AutoCloseable {
                 for (int i = 0; i < len; i++) result[i] = bits[i] & retained[i];
                 yield result;
             }
+            case DslParser.RetainingFilter f -> {
+                int objectCount = heap.objectCount();
+                long[] result = new long[bits.length];
+                try (var retainedSize = registry.openRetainedSize()) {
+                    for (int v = 0; v < objectCount; v++) {
+                        if ((bits[v >>> 6] >>> (v & 63) & 1L) != 0L) {
+                            long rs = retainedSize.readLong(v);
+                            if (matchesOp(rs, f.op(), f.size()))
+                                result[v >>> 6] |= 1L << (v & 63);
+                        }
+                    }
+                }
+                yield result;
+            }
+        };
+    }
+
+    private static boolean matchesOp(long value, String op, long threshold) {
+        return switch (op) {
+            case ">"  -> value >  threshold;
+            case ">=" -> value >= threshold;
+            case "<"  -> value <  threshold;
+            case "<=" -> value <= threshold;
+            case "="  -> value == threshold;
+            default   -> throw new IllegalArgumentException("Unknown op: " + op);
         };
     }
 

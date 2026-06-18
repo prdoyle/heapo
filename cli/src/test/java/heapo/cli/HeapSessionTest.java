@@ -421,6 +421,44 @@ class HeapSessionTest {
         }
     }
 
+    // ── Phase: RETAINING > n pipeline filter ─────────────────────────────────
+
+    @Test
+    void retainingFilterAsPartOfPipeline() throws Exception {
+        Path p = tempRoot.resolve("retaining-pipeline.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            // Build a named set, then filter it by retained size
+            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CALL THAT allBars");
+
+            // Keep only bars retaining > 0 bytes (all should qualify)
+            String result = session.execute("FROM allBars RETAINING > 0 AGGREGATE COUNT");
+            assertFalse(result.contains("\"error\""), "RETAINING filter in pipeline should succeed: " + result);
+            assertTrue(result.contains("\"count\""), "Should return count field");
+
+            // Keep only bars retaining > Long.MAX_VALUE (none should qualify)
+            String empty = session.execute("FROM allBars RETAINING > 9999999999999 AGGREGATE COUNT");
+            assertFalse(empty.contains("\"error\""), "RETAINING > huge should succeed: " + empty);
+            long count = Long.parseLong(empty.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
+            assertEquals(0, count, "No objects should retain > 9999999999999 bytes");
+        }
+    }
+
+    @Test
+    void retainingFilterCombinesWithInFilter() throws Exception {
+        Path p = tempRoot.resolve("retaining-combined.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CALL THAT bars");
+
+            // Bars intersected with bars (no-op), then filtered by retaining > 0
+            String result = session.execute("ALL * IN bars RETAINING > 0 AGGREGATE COUNT");
+            assertFalse(result.contains("\"error\""),
+                "Combined IN + RETAINING filters should succeed: " + result);
+            assertTrue(result.contains("\"count\""), "Should return count");
+        }
+    }
+
     // ── Phase: RETAINED BY <name> pipeline filter ─────────────────────────────
 
     @Test
