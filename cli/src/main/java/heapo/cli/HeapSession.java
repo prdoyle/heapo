@@ -53,7 +53,7 @@ public final class HeapSession implements AutoCloseable {
         if (trimmed.equalsIgnoreCase("UNDO"))  return handleUndo();
         if (trimmed.matches("(?i)HISTORY(\\s+\\d+)?")) return handleHistory(trimmed);
         if (trimmed.matches("(?i)CALL\\s+THAT\\s+\\S+")) return handleCallThat(trimmed);
-        if (trimmed.matches("(?i)CALL\\s+#\\d+\\s+\\S+")) return handleCallById(trimmed);
+        if (trimmed.matches("(?i)CALL\\s+@\\d+\\s+\\S+")) return handleCallById(trimmed);
         if (trimmed.matches("(?i)FORGET\\s+\\S+")) return handleForget(trimmed);
 
         // ── SQL query ─────────────────────────────────────────────────────────
@@ -112,7 +112,10 @@ public final class HeapSession implements AutoCloseable {
 
     private String handleCallById(String cmd) throws SQLException {
         String[] parts = cmd.split("\\s+");
-        int targetId   = Integer.parseInt(parts[1].substring(1));
+        String ref = parts[1];
+        if (!ref.startsWith("@"))
+            throw new IllegalArgumentException("History reference must start with @ (e.g. CALL @42 name)");
+        int targetId = Integer.parseInt(ref.substring(1));
         String name    = parts[2];
         var displaced  = names.bind(name, targetId);
         int callId     = history.record(cmd, System.currentTimeMillis());
@@ -139,7 +142,7 @@ public final class HeapSession implements AutoCloseable {
         int undoId   = history.record("UNDO", System.currentTimeMillis());
 
         if (upper.startsWith("CALL ")) {
-            String name = cmd.strip().split("\\s+")[2]; // CALL THAT <name> or CALL #id <name>
+            String name = cmd.strip().split("\\s+")[2]; // CALL THAT <name> or CALL @id <name>
             names.forget(name);
             Integer displaced = entry.get().input2();
             if (displaced != null) names.bind(name, displaced);

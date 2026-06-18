@@ -62,7 +62,7 @@ public final class Main implements Runnable {
         Session commands:
           NAMES                  show all named results
           CALL THAT <name>       name the last result
-          CALL #<id> <name>      name a specific history entry
+          CALL @<id> <name>      name a specific history entry
           FORGET <name>          remove a name
           UNDO                   reverse the last CALL or FORGET
           HISTORY [<n>]          show recent commands (default 10)
