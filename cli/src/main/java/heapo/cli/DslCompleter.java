@@ -57,7 +57,10 @@ final class DslCompleter implements Completer {
                 if (wordIndex == 1) suggest(candidates, partial, List.of("MATCHING"));
             }
             case "EXPLAIN" -> {
-                if (wordIndex == 1) suggest(candidates, partial, List.of("#"));
+                if (wordIndex == 1) {
+                    suggest(candidates, partial, List.of("#"));
+                    suggest(candidates, partial, allNameSuggestions());
+                }
             }
             case "RETAINED" -> completeRetainedBy(words, wordIndex, partial, candidates);
             case "CALL" -> completeCall(words, wordIndex, partial, candidates);

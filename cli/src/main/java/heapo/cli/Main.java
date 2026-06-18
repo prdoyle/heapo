@@ -92,6 +92,7 @@ public final class Main implements Runnable {
 
         Session commands:
           NAMES [MATCHING <glob>]  show named results (optionally filtered)
+          EXPLAIN <name>           show what command produced the named result
           CALL THAT <name>         name the last result (persists a bitset to disk)
           CALL @<id> <name>      name a specific history entry
           FORGET <name>          remove a name
@@ -160,12 +161,24 @@ public final class Main implements Runnable {
                         System.out.print(REPL_HELP);
                         continue;
                     }
-                    if (trimmed.isEmpty()) continue;
+                    if (trimmed.isEmpty()) {
+                        // Blank input: re-display THAT (handy for reviewing last result)
+                        try {
+                            String output = session.execute("THAT");
+                            if (!output.contains("\"error\"") && !output.isEmpty()) {
+                                System.out.print(OutputFormatter.convert(output, OutputFormatter.Format.HUMAN));
+                                System.out.println();
+                            }
+                        } catch (Exception ignored) {}
+                        continue;
+                    }
 
                     try {
                         String output = session.execute(trimmed);
-                        if (!output.isEmpty())
+                        if (!output.isEmpty()) {
                             System.out.print(OutputFormatter.convert(output, OutputFormatter.Format.HUMAN));
+                            System.out.println(); // blank line separator after each result
+                        }
                     } catch (Exception e) {
                         System.err.println("Error: " + e.getMessage());
                     }

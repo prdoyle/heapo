@@ -133,6 +133,7 @@ FROM THAT TOP 5 BY retainedSize
 | `STATUS` | Object and class count |
 | `CLASSES [MATCHING <glob>]` | All classes sorted by instance count; glob matches dotted class name |
 | `NAMES [MATCHING <glob>]` | All named bitset results; glob filters by name |
+| `EXPLAIN <name>` | Show which history command produced the named result (provenance) |
 | `TOP <n> BY retainedSize` | Largest-N objects across all classes |
 | `BOTTOM <n> BY retainedSize` | Smallest-N objects across all classes |
 | `ALL <class> RETAINING > <bytes>` | Instances satisfying the comparison (`>` `>=` `<` `<=` `=`) |

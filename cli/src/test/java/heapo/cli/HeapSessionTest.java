@@ -462,6 +462,33 @@ class HeapSessionTest {
         }
     }
 
+    // ── Phase: EXPLAIN <name> provenance ─────────────────────────────────────
+
+    @Test
+    void explainNameShowsSourceCommand() throws Exception {
+        Path p = tempRoot.resolve("explain-name.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CALL THAT myBarsE");
+
+            String result = session.execute("EXPLAIN myBarsE");
+            assertFalse(result.contains("\"error\""), "EXPLAIN <name> should succeed: " + result);
+            assertTrue(result.contains("\"name\":\"myBarsE\""), "Should include name");
+            assertTrue(result.contains("\"histId\""),           "Should include histId");
+            assertTrue(result.contains("\"command\""),          "Should include command");
+            assertTrue(result.contains("KnownObjects$Bar"),     "Command should reference the query");
+        }
+    }
+
+    @Test
+    void explainUnknownNameReturnsError() throws Exception {
+        Path p = tempRoot.resolve("explain-unknown.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            String result = session.execute("EXPLAIN nonExistentName");
+            assertTrue(result.contains("\"error\""), "EXPLAIN unknown name should return error");
+        }
+    }
+
     // ── Phase: REFERENCING / REFERENCED BY direct reference filters ───────────
 
     @Test

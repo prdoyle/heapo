@@ -57,6 +57,8 @@ public final class HeapSession implements AutoCloseable {
 
         // ── Session commands ──────────────────────────────────────────────────
         if (trimmed.matches("(?i)NAMES(\\s+MATCHING\\s+\\S+)?")) return handleNames(trimmed);
+        if (trimmed.matches("(?i)EXPLAIN\\s+\\S+") && !trimmed.split("\\s+")[1].startsWith("#"))
+            return handleExplainName(trimmed.split("\\s+")[1]);
         if (trimmed.equalsIgnoreCase("THAT")) {
             if (that instanceof VoidAnswer)    return "{\"error\":\"THAT is empty\"}\n";
             if (that instanceof BitSetAnswer b) return displayBitSet(b.bits());
@@ -95,6 +97,28 @@ public final class HeapSession implements AutoCloseable {
             }
         }
         return sb.isEmpty() ? "{\"names\":[]}\n" : sb.toString();
+    }
+
+    private String handleExplainName(String name) throws SQLException {
+        var histIdOpt = names.resolve(name);
+        if (histIdOpt.isEmpty())
+            return "{\"error\":\"Unknown name: '" + escJson(name) + "'\"}\n";
+        int histId = histIdOpt.get();
+        var entryOpt = history.findById(histId);
+        if (entryOpt.isEmpty())
+            return "{\"error\":\"History @" + histId + " not found\"}\n";
+        var entry = entryOpt.get();
+        String type = entry.bitsetFile() != null ? "bitset"
+                    : entry.sqlTable() != null   ? "table"
+                    : "other";
+        var sb = new StringBuilder();
+        sb.append("{\"name\":\"").append(escJson(name)).append('"')
+          .append(",\"histId\":\"@").append(histId).append('"')
+          .append(",\"type\":\"").append(type).append('"')
+          .append(",\"command\":\"").append(escJson(entry.command())).append('"');
+        if (entry.input1() != null) sb.append(",\"derivedFrom\":\"@").append(entry.input1()).append('"');
+        sb.append("}\n");
+        return sb.toString();
     }
 
     private static boolean matchNameGlob(String name, String glob) {
