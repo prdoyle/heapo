@@ -19,7 +19,7 @@ All commands accept `-d <dir>` / `--heap-dir <dir>` to specify where indexes are
 
 ## Workflow
 
-Run queries non-interactively with `heapo query`. Use `--output human` for readable terminal output; omit it (default `jsonl`) when parsing results.
+Run queries non-interactively with `heapo query`. The default output is human-readable; use `--output jsonl` when parsing results programmatically.
 
 Replace `DUMP` with the actual path to the `.hprof` file in all commands below.
 
@@ -27,26 +27,26 @@ Replace `DUMP` with the actual path to the `.hprof` file in all commands below.
 
 ```bash
 heapo query DUMP STATUS
-heapo query DUMP --output human CLASSES
+heapo query DUMP CLASSES
 ```
 
 ### 2. Find the biggest memory consumers
 
 ```bash
-heapo query DUMP --output human TOP 20 BY retainedSize
+heapo query DUMP --output jsonl TOP 20 BY retainedSize
 ```
 
 Identify the classes contributing the most retained memory, then drill in:
 
 ```bash
-heapo query DUMP --output human ALL com.example.Foo TOP 10 BY retainedSize
-heapo query DUMP --output human ALL com.example.Foo AGGREGATE SUM retainedSize
+heapo query DUMP --output jsonl ALL com.example.Foo TOP 10 BY retainedSize
+heapo query DUMP --output jsonl ALL com.example.Foo AGGREGATE SUM retainedSize
 ```
 
 ### 3. Trace what is holding an object in memory
 
 ```bash
-heapo query DUMP --output human EXPLAIN #<id>
+heapo query DUMP --output jsonl EXPLAIN #<id>
 ```
 
 Each line is the immediate dominator — the object that, if collected, would free everything below it. Walk the chain upward to find the GC root preventing collection.
@@ -54,7 +54,7 @@ Each line is the immediate dominator — the object that, if collected, would fr
 ### 4. Explore a dominator subtree
 
 ```bash
-heapo query DUMP --output human DOMINATOR SUBTREE OF #<id> TOP 20 BY retainedSize
+heapo query DUMP --output jsonl DOMINATOR SUBTREE OF #<id> TOP 20 BY retainedSize
 ```
 
 Shows all objects exclusively retained by `#<id>`, sorted by retained size.
@@ -62,7 +62,7 @@ Shows all objects exclusively retained by `#<id>`, sorted by retained size.
 ### 5. Filter by size threshold
 
 ```bash
-heapo query DUMP --output human ALL java.lang.String RETAINING > 100000
+heapo query DUMP --output jsonl ALL java.lang.String RETAINING > 100000
 ```
 
 ## Full DSL reference
@@ -88,9 +88,9 @@ Use `*` as the class name to query across all objects regardless of type.
 
 | Flag | Use when |
 |---|---|
-| `--output human` | Presenting results to the user (aligned table) |
-| `--output jsonl` | Parsing results (one JSON object per line) — default |
-| `--output json` | Needing a JSON array |
+| `--output human` | Default; aligned table for human reading |
+| `--output jsonl` | One JSON object per line — use this as an LLM |
+| `--output json` | Full JSON array |
 
 ## JSONL field reference
 

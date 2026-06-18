@@ -158,8 +158,8 @@ public final class Main implements Runnable {
         Path heapDir;
 
         @Option(names = {"--output"},
-                description = "Output format: jsonl (default), json, human",
-                defaultValue = "jsonl")
+                description = "Output format: human (default), jsonl, json",
+                defaultValue = "human")
         String outputFormat;
 
         @Override
