@@ -6,46 +6,47 @@ argument-hint: [path/to/dump.hprof]
 
 Analyse the heap dump at `$ARGUMENTS`. If no path was provided, ask the user for it before proceeding.
 
-## Setup
+## Commands
 
-Build heapo if the binary is not already present:
+| Command | Description |
+|---|---|
+| `heapo open <dump.hprof>` | Build indexes and start interactive REPL |
+| `heapo query <dump.hprof> <query...>` | Run one query and exit |
+| `heapo unpack <dump.hprof>` | Pre-build indexes without querying |
+| `heapo skill` | Print this skill file |
 
-```bash
-./gradlew :cli:installDist
-```
-
-Binary location after build: `cli/build/install/heapo/bin/heapo`
+All commands accept `-d <dir>` / `--heap-dir <dir>` to specify where indexes are stored (default: `<dump>.d/` next to the HPROF file). Indexes are cached; subsequent runs reuse them and are fast.
 
 ## Workflow
 
-Run individual queries non-interactively. Use `--output human` for readable terminal output; use `--output jsonl` (default) when you need to parse results programmatically.
+Run queries non-interactively with `heapo query`. Use `--output human` for readable terminal output; omit it (default `jsonl`) when parsing results.
 
 Replace `DUMP` with the actual path to the `.hprof` file in all commands below.
 
 ### 1. Orient
 
 ```bash
-heapo DUMP --output human STATUS
-heapo DUMP --output human CLASSES
+heapo query DUMP STATUS
+heapo query DUMP --output human CLASSES
 ```
 
 ### 2. Find the biggest memory consumers
 
 ```bash
-heapo DUMP --output human ALL * TOP 20 BY retainedSize
+heapo query DUMP --output human ALL * TOP 20 BY retainedSize
 ```
 
-Identify the classes contributing most retained memory, then drill in:
+Identify the classes contributing the most retained memory, then drill in:
 
 ```bash
-heapo DUMP --output human ALL com.example.Foo TOP 10 BY retainedSize
-heapo DUMP --output human ALL com.example.Foo AGGREGATE SUM retainedSize
+heapo query DUMP --output human ALL com.example.Foo TOP 10 BY retainedSize
+heapo query DUMP --output human ALL com.example.Foo AGGREGATE SUM retainedSize
 ```
 
 ### 3. Trace what is holding an object in memory
 
 ```bash
-heapo DUMP --output human EXPLAIN #<id>
+heapo query DUMP --output human EXPLAIN #<id>
 ```
 
 Each line is the immediate dominator — the object that, if collected, would free everything below it. Walk the chain upward to find the GC root preventing collection.
@@ -53,7 +54,7 @@ Each line is the immediate dominator — the object that, if collected, would fr
 ### 4. Explore a dominator subtree
 
 ```bash
-heapo DUMP --output human DOMINATOR SUBTREE OF #<id> TOP 20 BY retainedSize
+heapo query DUMP --output human DOMINATOR SUBTREE OF #<id> TOP 20 BY retainedSize
 ```
 
 Shows all objects exclusively retained by `#<id>`, sorted by retained size.
@@ -61,7 +62,7 @@ Shows all objects exclusively retained by `#<id>`, sorted by retained size.
 ### 5. Filter by size threshold
 
 ```bash
-heapo DUMP --output human ALL java.lang.String RETAINING > 100000
+heapo query DUMP --output human ALL java.lang.String RETAINING > 100000
 ```
 
 ## Full DSL reference
@@ -86,7 +87,7 @@ Use `*` as the class name to query across all objects regardless of type.
 | Flag | Use when |
 |---|---|
 | `--output human` | Presenting results to the user (aligned table) |
-| `--output jsonl` | Parsing results in code (one JSON object per line) |
+| `--output jsonl` | Parsing results (one JSON object per line) — default |
 | `--output json` | Needing a JSON array |
 
 ## JSONL field reference
@@ -120,8 +121,7 @@ Use `*` as the class name to query across all objects regardless of type.
 ## Analysis guidelines
 
 - **retainedSize** is the memory freed if the object were collected; it includes all objects exclusively dominated by it. This is the primary metric for leak analysis.
-- **shallowSize** is the object's own field storage only — not what it points to.
+- **shallowSize** is the object's own field storage only — not what it transitively points to.
 - Convert byte counts to MB (divide by 1 048 576) when presenting to the user.
 - Group findings by root cause (e.g. "two Cache instances together hold 450 MB").
 - For leak analysis: find objects with large retained sizes, then use EXPLAIN to find what is preventing their collection.
-- Indexes are cached in `<dump>.d/` next to the HPROF file. The first run unpacks and indexes the dump (takes seconds to minutes depending on size); subsequent runs reuse the cache and are fast.

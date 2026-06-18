@@ -3,3 +3,6 @@ build/
 .idea/
 *.iml
 out/
+# heapo index cache directories (created alongside .hprof files)
+*.hprof.d/
+*.d/

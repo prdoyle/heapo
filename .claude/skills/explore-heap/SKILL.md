@@ -4,4 +4,4 @@ when_to_use: Triggered by phrases like: heap dump, HPROF file, memory leak, OutO
 argument-hint: [path/to/dump.hprof]
 ---
 
-!`./gradlew --quiet :cli:installDist > /dev/null 2>&1 && ./cli/build/install/heapo/bin/heapo --skill`
+!`heapo skill 2>/dev/null || (./gradlew --quiet :cli:installDist > /dev/null 2>&1 && ./cli/build/install/heapo/bin/heapo skill)`
