@@ -1,3 +1,13 @@
+plugins {
+    application
+}
+
+application {
+    mainClass = "heapo.cli.Main"
+    applicationName = "heapo"
+    applicationDefaultJvmArgs = listOf("--enable-preview")
+}
+
 dependencies {
     implementation(project(":model"))
     implementation(project(":unpack"))
