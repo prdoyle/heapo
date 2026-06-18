@@ -58,7 +58,7 @@ public final class Main implements Runnable {
           ALL <class> AGGREGATE MAX retainedSize  max retained size
           ALL <class> AGGREGATE SUM retainedSize  total retained size
           EXPLAIN #<id>                           dominator chain to GC root
-          DOMINATOR SUBTREE OF #<id> [TOP <n>]   all objects retained by #<id>
+          RETAINED BY #<id> [TOP <n> BY retainedSize]   all objects retained by #<id>
           Use * as class name to query all objects.
 
         Session commands:

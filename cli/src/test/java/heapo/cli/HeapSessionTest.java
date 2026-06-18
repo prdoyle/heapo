@@ -295,9 +295,9 @@ class HeapSessionTest {
             int idEnd   = topResult.indexOf('"', idStart);
             int denseId = Integer.parseInt(topResult.substring(idStart, idEnd));
 
-            String subtree = session.execute("DOMINATOR SUBTREE OF #" + denseId);
+            String subtree = session.execute("RETAINED BY #" + denseId);
             assertFalse(subtree.contains("\"error\""),
-                "DOMINATOR SUBTREE query should succeed: " + subtree);
+                "RETAINED BY query should succeed: " + subtree);
             // The root itself should always appear
             assertTrue(subtree.contains("\"#" + denseId + "\""),
                 "Root object should appear in subtree");

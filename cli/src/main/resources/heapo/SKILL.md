@@ -54,7 +54,7 @@ Each line is the immediate dominator — the object that, if collected, would fr
 ### 4. Explore a dominator subtree
 
 ```bash
-heapo query DUMP --output jsonl DOMINATOR SUBTREE OF #<id> TOP 20 BY retainedSize
+heapo query DUMP --output jsonl RETAINED BY #<id> TOP 20 BY retainedSize
 ```
 
 Shows all objects exclusively retained by `#<id>`, sorted by retained size.
@@ -80,7 +80,7 @@ heapo query DUMP --output jsonl ALL java.lang.String RETAINING > 100000
 | `ALL <class> AGGREGATE MAX retainedSize` | Maximum retained size across all instances |
 | `ALL <class> AGGREGATE SUM retainedSize` | Sum of retained sizes across all instances |
 | `EXPLAIN #<id>` | Dominator chain from object to GC root |
-| `DOMINATOR SUBTREE OF #<id> [TOP <n> BY retainedSize]` | All objects in the dominator subtree |
+| `RETAINED BY #<id> [TOP <n> BY retainedSize]` | All objects in the dominator subtree |
 
 Use `*` as the class name to query across all objects regardless of type.
 
@@ -94,7 +94,7 @@ Use `*` as the class name to query across all objects regardless of type.
 
 ## JSONL field reference
 
-**TOP / BOTTOM / RETAINING / DOMINATOR SUBTREE rows:**
+**TOP / BOTTOM / RETAINING / RETAINED BY rows:**
 ```json
 {"rank":0,"id":"#12345","type":"java.util.HashMap","retainedSize":2097152,"shallowSize":48}
 ```

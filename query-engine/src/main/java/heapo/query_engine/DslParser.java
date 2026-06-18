@@ -13,7 +13,7 @@ import java.util.Set;
  *   <li>{@code ALL <class> AGGREGATE SUM retainedSize}
  *   <li>{@code CLASSES [MATCHING <glob>]}
  *   <li>{@code EXPLAIN #<denseId>}
- *   <li>{@code DOMINATOR SUBTREE OF #<id> [TOP n BY retainedSize]}
+ *   <li>{@code RETAINED BY #<id> [TOP n BY retainedSize]}
  *   <li>{@code STATUS}
  * </ul>
  * {@code <class>} is a fully-qualified dotted class name or {@code *} for all objects.
@@ -57,7 +57,7 @@ public final class DslParser {
             case "BOTTOM"    -> parseAll(withAllAndClass("*", tokens), input);
             case "CLASSES"   -> parseClasses(tokens);
             case "EXPLAIN"   -> parseExplain(tokens);
-            case "DOMINATOR" -> parseDominatorSubtree(tokens);
+            case "RETAINED"  -> parseRetainedBy(tokens);
             case "STATUS"    -> new StatusQuery();
             default          -> throw new IllegalArgumentException("Unrecognised query: " + input);
         };
@@ -112,21 +112,20 @@ public final class DslParser {
         throw bad(input);
     }
 
-    private static Query parseDominatorSubtree(String[] tokens) {
-        // DOMINATOR SUBTREE OF #id [TOP n BY retainedSize]
-        if (tokens.length < 4
-                || !tokens[1].equalsIgnoreCase("SUBTREE")
-                || !tokens[2].equalsIgnoreCase("OF")
-                || !tokens[3].startsWith("#")) {
-            throw new IllegalArgumentException("Usage: DOMINATOR SUBTREE OF #<id> [TOP n BY retainedSize]");
+    private static Query parseRetainedBy(String[] tokens) {
+        // RETAINED BY #id [TOP n BY retainedSize]
+        if (tokens.length < 3
+                || !tokens[1].equalsIgnoreCase("BY")
+                || !tokens[2].startsWith("#")) {
+            throw new IllegalArgumentException("Usage: RETAINED BY #<id> [TOP n BY retainedSize]");
         }
-        int denseId = Integer.parseInt(tokens[3].substring(1));
+        int denseId = Integer.parseInt(tokens[2].substring(1));
         int topN = -1;
-        if (tokens.length >= 8
-                && tokens[4].equalsIgnoreCase("TOP")
-                && tokens[6].equalsIgnoreCase("BY")
-                && tokens[7].equalsIgnoreCase("retainedSize")) {
-            topN = Integer.parseInt(tokens[5]);
+        if (tokens.length >= 7
+                && tokens[3].equalsIgnoreCase("TOP")
+                && tokens[5].equalsIgnoreCase("BY")
+                && tokens[6].equalsIgnoreCase("retainedSize")) {
+            topN = Integer.parseInt(tokens[4]);
         }
         return new DominatorSubtree(denseId, topN);
     }

@@ -17,7 +17,7 @@ import java.util.*;
 final class DslCompleter implements Completer {
 
     private static final List<String> TOP_LEVEL = List.of(
-        "ALL", "CLASSES", "EXPLAIN", "DOMINATOR", "STATUS",
+        "ALL", "CLASSES", "EXPLAIN", "RETAINED", "STATUS",
         "NAMES", "UNDO", "HISTORY", "CALL", "FORGET",
         "SELECT", "WITH", "exit", "quit"
     );
@@ -51,7 +51,7 @@ final class DslCompleter implements Completer {
             case "EXPLAIN" -> {
                 if (wordIndex == 1) suggest(candidates, partial, List.of("#"));
             }
-            case "DOMINATOR" -> completeDominator(words, wordIndex, partial, candidates);
+            case "RETAINED" -> completeRetainedBy(words, wordIndex, partial, candidates);
             case "CALL" -> completeCall(words, wordIndex, partial, candidates);
             case "FORGET" -> {
                 if (wordIndex == 1)
@@ -93,16 +93,16 @@ final class DslCompleter implements Completer {
         }
     }
 
-    private void completeDominator(List<String> words, int idx, String partial, List<Candidate> candidates) {
+    private void completeRetainedBy(List<String> words, int idx, String partial, List<Candidate> candidates) {
         switch (idx) {
-            case 1 -> suggest(candidates, partial, List.of("SUBTREE"));
+            case 1 -> suggest(candidates, partial, List.of("BY"));
             case 2 -> {
-                if (words.get(1).equalsIgnoreCase("SUBTREE"))
-                    suggest(candidates, partial, List.of("OF"));
+                if (words.get(1).equalsIgnoreCase("BY"))
+                    suggest(candidates, partial, List.of("#"));
             }
-            case 4 -> suggest(candidates, partial, List.of("TOP"));
-            case 6 -> suggest(candidates, partial, List.of("BY"));
-            case 7 -> suggest(candidates, partial, List.of("retainedSize"));
+            case 3 -> suggest(candidates, partial, List.of("TOP"));
+            case 5 -> suggest(candidates, partial, List.of("BY"));
+            case 6 -> suggest(candidates, partial, List.of("retainedSize"));
         }
     }
 
