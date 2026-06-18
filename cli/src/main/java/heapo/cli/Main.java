@@ -38,6 +38,8 @@ public final class Main implements Runnable {
     }
 
     public static void main(String[] args) {
+        System.setProperty("org.jooq.no-logo", "true");
+        System.setProperty("org.jooq.no-tips", "true");
         System.exit(new CommandLine(new Main()).execute(args));
     }
 

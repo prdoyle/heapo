@@ -49,7 +49,7 @@ class QueryEngineTest {
 
         assertEquals(1, rows.size(), "Expected exactly 1 result");
         var row = rows.get(0);
-        assertEquals(0, row.rank());
+        assertEquals(1, row.rank());
         assertEquals("heapo.samples.KnownObjects$Bar", row.className());
         assertTrue(row.retainedSize() > 0, "Retained size must be positive");
     }
@@ -74,7 +74,7 @@ class QueryEngineTest {
         List<TopNRow> rows = QueryEngine.allTopByRetainedSize(
             knownHeap, knownReg, "heapo.samples.KnownObjects$Bar", 1);
         String jsonl = JsonlFormatter.formatTopN(rows);
-        assertTrue(jsonl.contains("\"rank\":0"), "JSONL must contain rank");
+        assertTrue(jsonl.contains("\"rank\":1"), "JSONL must contain rank");
         assertTrue(jsonl.contains("\"type\":\"heapo.samples.KnownObjects$Bar\""), "JSONL must contain type");
         assertTrue(jsonl.contains("\"retainedSize\":"), "JSONL must contain retainedSize");
         assertTrue(jsonl.contains("\"shallowSize\":"), "JSONL must contain shallowSize");
@@ -88,7 +88,7 @@ class QueryEngineTest {
         assertTrue(rows.size() <= 5 && rows.size() > 0, "Expected 1-5 results");
         // Verify ranks are in order
         for (int i = 0; i < rows.size(); i++) {
-            assertEquals(i, rows.get(i).rank());
+            assertEquals(i + 1, rows.get(i).rank());
         }
     }
 

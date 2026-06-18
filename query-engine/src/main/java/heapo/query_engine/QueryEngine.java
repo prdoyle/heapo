@@ -62,7 +62,7 @@ public final class QueryEngine {
             for (int i = 0; i < sorted.size(); i++) {
                 int v        = sorted.get(i)[0];
                 int classDid = classOf.readInt(v);
-                rows.add(new TopNRow(i, v, names.nameOf(classDid),
+                rows.add(new TopNRow(i + 1, v, names.nameOf(classDid),
                     retained.readLong(v), (long) shallowSize.readInt(v) * 8L));
             }
         }
@@ -179,7 +179,7 @@ public final class QueryEngine {
             for (int i = 0; i < sorted.size(); i++) {
                 int v        = sorted.get(i)[0];
                 int classDid = classOf.readInt(v);
-                rows.add(new TopNRow(i, v, names.nameOf(classDid),
+                rows.add(new TopNRow(i + 1, v, names.nameOf(classDid),
                     retained.readLong(v), (long) shallowSize.readInt(v) * 8L));
             }
         }
@@ -231,7 +231,7 @@ public final class QueryEngine {
                 int v        = (int) matchingLong.get(i)[0];
                 long rs      = matchingLong.get(i)[1];
                 int classDid = classOf.readInt(v);
-                rows.add(new TopNRow(i, v, names.nameOf(classDid),
+                rows.add(new TopNRow(i + 1, v, names.nameOf(classDid),
                     rs, (long) shallowSize.readInt(v) * 8L));
             }
         }
@@ -335,7 +335,7 @@ public final class QueryEngine {
                 int v        = (int) pairs.get(i)[0];
                 long rs      = pairs.get(i)[1];
                 int classDid = classOf.readInt(v);
-                rows.add(new TopNRow(i, v, names.nameOf(classDid),
+                rows.add(new TopNRow(i + 1, v, names.nameOf(classDid),
                     rs, (long) shallowSize.readInt(v) * 8L));
             }
         }
