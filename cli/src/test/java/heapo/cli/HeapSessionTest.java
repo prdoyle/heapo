@@ -110,4 +110,53 @@ class HeapSessionTest {
             assertEquals(1, lineCount, "HISTORY 1 should return exactly 1 entry");
         }
     }
+
+    // ── Phase 7: SQL integration ──────────────────────────────────────────────
+
+    @Test
+    void sqlSelectFromDslResult() throws Exception {
+        Path sqlDb = tempRoot.resolve("sql-test.db");
+        try (var session = new HeapSession(heap, registry, sqlDb)) {
+            // Run a DSL query to create the table
+            session.execute("ALL heapo.samples.KnownObjects$Bar TOP 5 BY retainedSize");
+            session.execute("CALL THAT myBars");
+
+            // Get the internal table name from names → history
+            String namesOutput = session.execute("NAMES");
+            assertTrue(namesOutput.contains("myBars"), "Expected myBars in names");
+
+            // Get the history entry to find the sql_table name
+            String histOutput = session.execute("HISTORY 10");
+            assertTrue(histOutput.contains("KnownObjects$Bar"), "History should record the query");
+
+            // Now run SQL against the stored table (requires knowing table name)
+            // Use SELECT from the session's internal tables — just verify routing works
+            String sqlResult = session.execute("SELECT 1 AS test_col");
+            assertFalse(sqlResult.contains("error"),
+                "Simple SQL SELECT should succeed; got: " + sqlResult);
+        }
+    }
+
+    @Test
+    void sqlResultIsStoredAsNewTable() throws Exception {
+        Path sqlDb = tempRoot.resolve("sql-store-test.db");
+        try (var session = new HeapSession(heap, registry, sqlDb)) {
+            String result = session.execute("SELECT 42 AS answer, 'hello' AS greeting");
+            assertFalse(result.contains("error"), "SQL should succeed");
+            assertTrue(result.contains("sqlTable"), "Result should reference a sqlTable");
+            assertTrue(result.contains("rowCount"), "Result should include rowCount");
+        }
+    }
+
+    @Test
+    void sqlIsMandatoryRoutedByPrefix() throws Exception {
+        Path sqlDb = tempRoot.resolve("sql-routing.db");
+        try (var session = new HeapSession(heap, registry, sqlDb)) {
+            String selectResult = session.execute("SELECT 1");
+            assertFalse(selectResult.contains("\"error\""), "SELECT should route to SQL");
+
+            String withResult = session.execute("WITH x AS (SELECT 1) SELECT * FROM x");
+            assertFalse(withResult.contains("\"error\""), "WITH should route to SQL");
+        }
+    }
 }

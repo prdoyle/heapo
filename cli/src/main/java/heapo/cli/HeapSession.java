@@ -24,6 +24,7 @@ public final class HeapSession implements AutoCloseable {
     private final HistoryManager  history;
     private final NamesManager    names;
     private final UserTableManager tables;
+    private final SqlRouter       sql;
 
     private Answer that = VoidAnswer.INSTANCE;
 
@@ -35,6 +36,7 @@ public final class HeapSession implements AutoCloseable {
         this.history  = db.history();
         this.names    = db.names();
         this.tables   = db.tables();
+        this.sql      = db.sql();
     }
 
     // ── Command dispatch ──────────────────────────────────────────────────────
@@ -52,6 +54,9 @@ public final class HeapSession implements AutoCloseable {
         if (trimmed.matches("(?i)CALL\\s+THAT\\s+\\S+")) return handleCallThat(trimmed);
         if (trimmed.matches("(?i)CALL\\s+#\\d+\\s+\\S+")) return handleCallById(trimmed);
         if (trimmed.matches("(?i)FORGET\\s+\\S+")) return handleForget(trimmed);
+
+        // ── SQL query ─────────────────────────────────────────────────────────
+        if (SqlRouter.isSql(trimmed)) return handleSql(trimmed);
 
         // ── DSL query ─────────────────────────────────────────────────────────
         return handleQuery(trimmed);
@@ -118,6 +123,19 @@ public final class HeapSession implements AutoCloseable {
         names.forget(name);
         history.record(cmd, System.currentTimeMillis());
         return "{\"forgot\":\"" + escJson(name) + "\"}\n";
+    }
+
+    private String handleSql(String cmd) {
+        int histId = history.record(cmd, System.currentTimeMillis());
+        try {
+            TableAnswer answer = sql.execute(cmd);
+            history.setSqlTable(histId, answer.sqlTableName());
+            that = answer;
+            return "{\"sqlTable\":\"" + escJson(answer.sqlTableName())
+                + "\",\"rowCount\":" + answer.rowCount() + "}\n";
+        } catch (Exception e) {
+            return "{\"error\":\"" + escJson(e.getMessage()) + "\"}\n";
+        }
     }
 
     private String handleQuery(String cmd) throws IOException {

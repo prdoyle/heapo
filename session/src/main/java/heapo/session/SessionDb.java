@@ -17,12 +17,14 @@ public final class SessionDb implements AutoCloseable {
     private final HistoryManager history;
     private final NamesManager   names;
     private final UserTableManager tables;
+    private final SqlRouter      sql;
 
     private SessionDb(Connection conn, DSLContext ctx) {
         this.conn    = conn;
         this.history = new HistoryManager(ctx);
         this.names   = new NamesManager(ctx);
         this.tables  = new UserTableManager(ctx);
+        this.sql     = new SqlRouter(ctx);
     }
 
     public static SessionDb open(Path dbPath) throws SQLException {
@@ -36,6 +38,7 @@ public final class SessionDb implements AutoCloseable {
     public HistoryManager    history() { return history; }
     public NamesManager      names()   { return names;   }
     public UserTableManager  tables()  { return tables;  }
+    public SqlRouter         sql()     { return sql;     }
 
     private static void createSchema(DSLContext ctx) {
         ctx.createTableIfNotExists("history")
