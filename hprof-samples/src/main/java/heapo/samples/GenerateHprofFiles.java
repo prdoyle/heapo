@@ -25,6 +25,7 @@ public class GenerateHprofFiles {
     }
 
     private static void dump(Path path) throws Exception {
+        Files.deleteIfExists(path);
         var server = ManagementFactory.getPlatformMBeanServer();
         var bean = ManagementFactory.newPlatformMXBeanProxy(
             server, "com.sun.management:type=HotSpotDiagnostic", HotSpotDiagnosticMXBean.class);
