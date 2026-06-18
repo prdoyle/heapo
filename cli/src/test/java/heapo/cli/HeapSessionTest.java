@@ -159,4 +159,84 @@ class HeapSessionTest {
             assertFalse(withResult.contains("\"error\""), "WITH should route to SQL");
         }
     }
+
+    // ── Phase 8: additional DSL operations ───────────────────────────────────
+
+    @Test
+    void bottomNReturnsSmallestRetainedSizes() throws Exception {
+        Path p = tempRoot.resolve("bottom-n.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            String result = session.execute(
+                "ALL heapo.samples.KnownObjects$Bar BOTTOM 2 BY retainedSize");
+            assertFalse(result.contains("\"error\""), "BOTTOM query should succeed: " + result);
+            long lineCount = result.lines().filter(l -> !l.isBlank()).count();
+            assertTrue(lineCount <= 2, "Should return at most 2 rows");
+        }
+    }
+
+    @Test
+    void aggregateCountWildcard() throws Exception {
+        Path p = tempRoot.resolve("agg-count-all.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            String result = session.execute("ALL * AGGREGATE COUNT");
+            assertFalse(result.contains("\"error\""), "Wildcard count should succeed: " + result);
+            assertTrue(result.contains("\"count\""), "Result should contain count field");
+        }
+    }
+
+    @Test
+    void aggregateMaxRetainedSize() throws Exception {
+        Path p = tempRoot.resolve("agg-max.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            String result = session.execute(
+                "ALL heapo.samples.KnownObjects$Bar AGGREGATE MAX retainedSize");
+            assertFalse(result.contains("\"error\""), "MAX query should succeed: " + result);
+            assertTrue(result.contains("\"MAX\""), "Result should report MAX func");
+            assertTrue(result.contains("\"retainedSize\""), "Result should contain retainedSize");
+        }
+    }
+
+    @Test
+    void aggregateSumRetainedSize() throws Exception {
+        Path p = tempRoot.resolve("agg-sum.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            String result = session.execute(
+                "ALL heapo.samples.KnownObjects$Bar AGGREGATE SUM retainedSize");
+            assertFalse(result.contains("\"error\""), "SUM query should succeed: " + result);
+            assertTrue(result.contains("\"SUM\""), "Result should report SUM func");
+        }
+    }
+
+    @Test
+    void dominatorSubtreeReturnsDescendants() throws Exception {
+        Path p = tempRoot.resolve("dominator.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            // Get a non-trivial object first
+            String topResult = session.execute(
+                "ALL heapo.samples.KnownObjects$Bar TOP 1 BY retainedSize");
+            assertFalse(topResult.contains("\"error\""), "TOP query should succeed");
+            // Extract the id from the first line, e.g. "id":"#42"
+            int idStart = topResult.indexOf("\"#") + 2;
+            int idEnd   = topResult.indexOf('"', idStart);
+            int denseId = Integer.parseInt(topResult.substring(idStart, idEnd));
+
+            String subtree = session.execute("DOMINATOR SUBTREE OF #" + denseId);
+            assertFalse(subtree.contains("\"error\""),
+                "DOMINATOR SUBTREE query should succeed: " + subtree);
+            // The root itself should always appear
+            assertTrue(subtree.contains("\"#" + denseId + "\""),
+                "Root object should appear in subtree");
+        }
+    }
+
+    @Test
+    void retainingFilterReturnsMatchingObjects() throws Exception {
+        Path p = tempRoot.resolve("retaining-filter.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            // Ask for objects retaining more than 0 bytes (should return all)
+            String result = session.execute(
+                "ALL heapo.samples.KnownObjects$Bar RETAINING > 0");
+            assertFalse(result.contains("\"error\""), "RETAINING query should succeed: " + result);
+        }
+    }
 }

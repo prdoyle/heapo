@@ -157,9 +157,30 @@ public final class HeapSession implements AutoCloseable {
                 that = new TableAnswer(tableName, rows.size());
                 yield JsonlFormatter.formatTopN(rows);
             }
+            case DslParser.AllBottomByRetainedSize q -> {
+                List<TopNRow> rows =
+                    QueryEngine.allBottomByRetainedSize(heap, registry, q.className(), q.n());
+                String tableName = tables.writeTopNResult(rows);
+                history.setSqlTable(histId, tableName);
+                that = new TableAnswer(tableName, rows.size());
+                yield JsonlFormatter.formatTopN(rows);
+            }
+            case DslParser.AllRetaining q -> {
+                List<TopNRow> rows =
+                    QueryEngine.allRetaining(heap, registry, q.className(), q.op(), q.size());
+                String tableName = tables.writeTopNResult(rows);
+                history.setSqlTable(histId, tableName);
+                that = new TableAnswer(tableName, rows.size());
+                yield JsonlFormatter.formatTopN(rows);
+            }
             case DslParser.AggregateCount q -> {
                 long count = QueryEngine.aggregateCount(heap, registry, q.className());
                 yield JsonlFormatter.formatCount(q.className(), count);
+            }
+            case DslParser.AggregateRetainedSize q -> {
+                long value = QueryEngine.aggregateRetainedSize(
+                    heap, registry, q.className(), q.func());
+                yield JsonlFormatter.formatAggregateRetainedSize(q.className(), q.func(), value);
             }
             case DslParser.ClassesQuery q -> {
                 var classes = QueryEngine.classes(heap, registry, q.glob());
@@ -168,6 +189,14 @@ public final class HeapSession implements AutoCloseable {
             case DslParser.ExplainQuery q -> {
                 var path = QueryEngine.explain(heap, registry, q.denseId());
                 yield JsonlFormatter.formatExplain(path);
+            }
+            case DslParser.DominatorSubtree q -> {
+                List<TopNRow> rows =
+                    QueryEngine.dominatorSubtree(heap, registry, q.denseId(), q.topN());
+                String tableName = tables.writeTopNResult(rows);
+                history.setSqlTable(histId, tableName);
+                that = new TableAnswer(tableName, rows.size());
+                yield JsonlFormatter.formatTopN(rows);
             }
             case DslParser.StatusQuery ignored -> {
                 yield "{\"objectCount\":" + heap.objectCount()

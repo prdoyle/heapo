@@ -135,6 +135,213 @@ public final class QueryEngine {
         return path;
     }
 
+    /**
+     * Returns the bottom {@code n} objects of the given class ordered by retained size ascending.
+     */
+    public static List<TopNRow> allBottomByRetainedSize(UnpackedHeap heap, IndexRegistry registry,
+                                                         String className, int n) throws IOException {
+        var names        = ClassNameIndex.load(heap);
+        int objectCount  = heap.objectCount();
+        boolean allObjs  = className.equals("*");
+        int classDenseId = allObjs ? -1 : names.resolve(className);
+        if (!allObjs && classDenseId < 0) return List.of();
+
+        // Min-heap of size n (keep smallest retained sizes); use rank as proxy for size
+        PriorityQueue<int[]> bottomN = new PriorityQueue<>(n + 1,
+            (a, b) -> Integer.compare(a[1], b[1])); // min-heap by rank
+
+        try (var il   = registry.openInstanceList();
+             var rank = registry.openRetainedSizeRank()) {
+
+            if (allObjs) {
+                for (int v = 0; v < objectCount; v++) {
+                    bottomN.offer(new int[]{v, rank.readInt(v)});
+                    if (bottomN.size() > n) bottomN.poll();
+                }
+            } else {
+                for (long e = il.start(classDenseId), end = il.end(classDenseId); e < end; e++) {
+                    int v = il.edge(e);
+                    bottomN.offer(new int[]{v, rank.readInt(v)});
+                    if (bottomN.size() > n) bottomN.poll();
+                }
+            }
+        }
+
+        // Sort by rank descending (smallest retained last = ascending retained order → rank desc = size asc)
+        List<int[]> sorted = new ArrayList<>(bottomN);
+        sorted.sort((a, b) -> Integer.compare(b[1], a[1])); // rank desc → retained size asc
+
+        List<TopNRow> rows = new ArrayList<>(sorted.size());
+        try (var retained    = registry.openRetainedSize();
+             var shallowSize = registry.openShallowSize();
+             var classOf     = registry.openClassOf()) {
+
+            for (int i = 0; i < sorted.size(); i++) {
+                int v        = sorted.get(i)[0];
+                int classDid = classOf.readInt(v);
+                rows.add(new TopNRow(i, v, names.nameOf(classDid),
+                    retained.readLong(v), (long) shallowSize.readInt(v) * 8L));
+            }
+        }
+        return rows;
+    }
+
+    /**
+     * Returns all instances of the given class whose retained size satisfies the comparison.
+     * Results are sorted by retained size descending.
+     *
+     * @param op one of {@code ">"}, {@code ">="}, {@code "<"}, {@code "<="}, {@code "="}
+     */
+    public static List<TopNRow> allRetaining(UnpackedHeap heap, IndexRegistry registry,
+                                              String className, String op, long threshold)
+            throws IOException {
+        var names        = ClassNameIndex.load(heap);
+        int objectCount  = heap.objectCount();
+        boolean allObjs  = className.equals("*");
+        int classDenseId = allObjs ? -1 : names.resolve(className);
+        if (!allObjs && classDenseId < 0) return List.of();
+
+        var matching = new ArrayList<int[]>(); // [denseId, retainedHigh, retainedLow] — store as long pair
+        var matchingLong = new ArrayList<long[]>(); // [denseId, retainedSize]
+
+        try (var il       = registry.openInstanceList();
+             var retained = registry.openRetainedSize()) {
+
+            if (allObjs) {
+                for (int v = 0; v < objectCount; v++) {
+                    long rs = retained.readLong(v);
+                    if (matches(rs, op, threshold)) matchingLong.add(new long[]{v, rs});
+                }
+            } else {
+                for (long e = il.start(classDenseId), end = il.end(classDenseId); e < end; e++) {
+                    int v  = il.edge(e);
+                    long rs = retained.readLong(v);
+                    if (matches(rs, op, threshold)) matchingLong.add(new long[]{v, rs});
+                }
+            }
+        }
+
+        matchingLong.sort((a, b) -> Long.compare(b[1], a[1])); // descending retained size
+
+        List<TopNRow> rows = new ArrayList<>(matchingLong.size());
+        try (var shallowSize = registry.openShallowSize();
+             var classOf     = registry.openClassOf()) {
+
+            for (int i = 0; i < matchingLong.size(); i++) {
+                int v        = (int) matchingLong.get(i)[0];
+                long rs      = matchingLong.get(i)[1];
+                int classDid = classOf.readInt(v);
+                rows.add(new TopNRow(i, v, names.nameOf(classDid),
+                    rs, (long) shallowSize.readInt(v) * 8L));
+            }
+        }
+        return rows;
+    }
+
+    private static boolean matches(long value, String op, long threshold) {
+        return switch (op) {
+            case ">"  -> value >  threshold;
+            case ">=" -> value >= threshold;
+            case "<"  -> value <  threshold;
+            case "<=" -> value <= threshold;
+            case "="  -> value == threshold;
+            default   -> throw new IllegalArgumentException("Unknown op: " + op);
+        };
+    }
+
+    /**
+     * Computes MAX or SUM of retained sizes across all instances of the given class.
+     *
+     * @param func {@code "MAX"} or {@code "SUM"}
+     */
+    public static long aggregateRetainedSize(UnpackedHeap heap, IndexRegistry registry,
+                                              String className, String func) throws IOException {
+        var names        = ClassNameIndex.load(heap);
+        int objectCount  = heap.objectCount();
+        boolean allObjs  = className.equals("*");
+        int classDenseId = allObjs ? -1 : names.resolve(className);
+        if (!allObjs && classDenseId < 0) return 0;
+
+        long acc = func.equals("SUM") ? 0 : Long.MIN_VALUE;
+
+        try (var il       = registry.openInstanceList();
+             var retained = registry.openRetainedSize()) {
+
+            if (allObjs) {
+                for (int v = 0; v < objectCount; v++) {
+                    long rs = retained.readLong(v);
+                    acc = func.equals("SUM") ? acc + rs : Math.max(acc, rs);
+                }
+            } else {
+                for (long e = il.start(classDenseId), end = il.end(classDenseId); e < end; e++) {
+                    int v  = il.edge(e);
+                    long rs = retained.readLong(v);
+                    acc = func.equals("SUM") ? acc + rs : Math.max(acc, rs);
+                }
+            }
+        }
+
+        return func.equals("MAX") && acc == Long.MIN_VALUE ? 0 : acc;
+    }
+
+    /**
+     * Returns all objects in the dominator subtree rooted at {@code rootDenseId}.
+     * If {@code topN > 0}, only the top-N by retained size are returned; otherwise all.
+     * Results are sorted by retained size descending.
+     */
+    public static List<TopNRow> dominatorSubtree(UnpackedHeap heap, IndexRegistry registry,
+                                                   int rootDenseId, int topN) throws IOException {
+        var names       = ClassNameIndex.load(heap);
+        int objectCount = heap.objectCount();
+
+        // Build reverse idom map (children list) from a single scan of idom[]
+        var children = new ArrayList<List<Integer>>(objectCount);
+        for (int i = 0; i < objectCount; i++) children.add(new ArrayList<>());
+
+        try (var idom = registry.openIdom()) {
+            for (int v = 0; v < objectCount; v++) {
+                int parent = idom.readInt(v);
+                if (parent >= 0 && parent < objectCount) {
+                    children.get(parent).add(v);
+                }
+            }
+        }
+
+        // BFS from rootDenseId
+        var subtree  = new ArrayList<Integer>();
+        var queue    = new ArrayDeque<Integer>();
+        queue.add(rootDenseId);
+        while (!queue.isEmpty()) {
+            int cur = queue.poll();
+            subtree.add(cur);
+            queue.addAll(children.get(cur));
+        }
+
+        // Collect [denseId, retainedSize] and sort descending
+        var pairs = new ArrayList<long[]>(subtree.size());
+        try (var retained = registry.openRetainedSize()) {
+            for (int v : subtree) {
+                pairs.add(new long[]{v, retained.readLong(v)});
+            }
+        }
+        pairs.sort((a, b) -> Long.compare(b[1], a[1]));
+
+        int limit = topN > 0 ? Math.min(topN, pairs.size()) : pairs.size();
+        List<TopNRow> rows = new ArrayList<>(limit);
+        try (var shallowSize = registry.openShallowSize();
+             var classOf     = registry.openClassOf()) {
+
+            for (int i = 0; i < limit; i++) {
+                int v        = (int) pairs.get(i)[0];
+                long rs      = pairs.get(i)[1];
+                int classDid = classOf.readInt(v);
+                rows.add(new TopNRow(i, v, names.nameOf(classDid),
+                    rs, (long) shallowSize.readInt(v) * 8L));
+            }
+        }
+        return rows;
+    }
+
     private static boolean matchGlob(String s, String pattern) {
         return s.matches(pattern.replace(".", "\\.").replace("*", ".*").replace("?", "."));
     }

@@ -77,12 +77,21 @@ public final class Main implements Callable<Integer> {
         String output = switch (parsed) {
             case DslParser.AllTopByRetainedSize q ->
                 JsonlFormatter.formatTopN(QueryEngine.allTopByRetainedSize(heap, reg, q.className(), q.n()));
+            case DslParser.AllBottomByRetainedSize q ->
+                JsonlFormatter.formatTopN(QueryEngine.allBottomByRetainedSize(heap, reg, q.className(), q.n()));
+            case DslParser.AllRetaining q ->
+                JsonlFormatter.formatTopN(QueryEngine.allRetaining(heap, reg, q.className(), q.op(), q.size()));
             case DslParser.AggregateCount q ->
                 JsonlFormatter.formatCount(q.className(), QueryEngine.aggregateCount(heap, reg, q.className()));
+            case DslParser.AggregateRetainedSize q ->
+                JsonlFormatter.formatAggregateRetainedSize(q.className(), q.func(),
+                    QueryEngine.aggregateRetainedSize(heap, reg, q.className(), q.func()));
             case DslParser.ClassesQuery q ->
                 JsonlFormatter.formatClasses(QueryEngine.classes(heap, reg, q.glob()));
             case DslParser.ExplainQuery q ->
                 JsonlFormatter.formatExplain(QueryEngine.explain(heap, reg, q.denseId()));
+            case DslParser.DominatorSubtree q ->
+                JsonlFormatter.formatTopN(QueryEngine.dominatorSubtree(heap, reg, q.denseId(), q.topN()));
             case DslParser.StatusQuery ignored ->
                 "{\"objectCount\":" + heap.objectCount() + ",\"classCount\":" + heap.classCount() + "}\n";
         };

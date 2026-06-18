@@ -49,6 +49,11 @@ public final class JsonlFormatter {
         return sb.toString();
     }
 
+    public static String formatAggregateRetainedSize(String className, String func, long value) {
+        return "{\"className\":\"" + esc(className) + "\",\"func\":\"" + func
+            + "\",\"retainedSize\":" + value + "}\n";
+    }
+
     private static String esc(String s) {
         return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
