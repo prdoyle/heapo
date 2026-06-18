@@ -137,7 +137,24 @@ public final class HeapSession implements AutoCloseable {
                 String tableName = tables.writeTopNResult(rows);
                 history.setSqlTable(histId, tableName);
                 that = new TableAnswer(tableName, rows.size());
-                yield JsonlFormatter.format(rows);
+                yield JsonlFormatter.formatTopN(rows);
+            }
+            case DslParser.AggregateCount q -> {
+                long count = QueryEngine.aggregateCount(heap, registry, q.className());
+                yield JsonlFormatter.formatCount(q.className(), count);
+            }
+            case DslParser.ClassesQuery q -> {
+                var classes = QueryEngine.classes(heap, registry, q.glob());
+                yield JsonlFormatter.formatClasses(classes);
+            }
+            case DslParser.ExplainQuery q -> {
+                var path = QueryEngine.explain(heap, registry, q.denseId());
+                yield JsonlFormatter.formatExplain(path);
+            }
+            case DslParser.StatusQuery ignored -> {
+                yield "{\"objectCount\":" + heap.objectCount()
+                    + ",\"classCount\":" + heap.classCount()
+                    + "}\n";
             }
         };
     }

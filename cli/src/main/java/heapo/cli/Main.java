@@ -1,7 +1,6 @@
 package heapo.cli;
 
 import heapo.indexes.IndexRegistry;
-import heapo.model.TopNRow;
 import heapo.query_engine.*;
 import heapo.unpack.Unpacker;
 import heapo.unpack.UnpackedHeap;
@@ -75,12 +74,20 @@ public final class Main implements Callable<Integer> {
             return 1;
         }
 
-        List<TopNRow> rows = switch (parsed) {
+        String output = switch (parsed) {
             case DslParser.AllTopByRetainedSize q ->
-                QueryEngine.allTopByRetainedSize(heap, reg, q.className(), q.n());
+                JsonlFormatter.formatTopN(QueryEngine.allTopByRetainedSize(heap, reg, q.className(), q.n()));
+            case DslParser.AggregateCount q ->
+                JsonlFormatter.formatCount(q.className(), QueryEngine.aggregateCount(heap, reg, q.className()));
+            case DslParser.ClassesQuery q ->
+                JsonlFormatter.formatClasses(QueryEngine.classes(heap, reg, q.glob()));
+            case DslParser.ExplainQuery q ->
+                JsonlFormatter.formatExplain(QueryEngine.explain(heap, reg, q.denseId()));
+            case DslParser.StatusQuery ignored ->
+                "{\"objectCount\":" + heap.objectCount() + ",\"classCount\":" + heap.classCount() + "}\n";
         };
 
-        System.out.print(JsonlFormatter.format(rows));
+        System.out.print(output);
         return 0;
     }
 

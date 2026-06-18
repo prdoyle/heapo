@@ -73,7 +73,7 @@ class QueryEngineTest {
     void jsonlFormatterProducesValidLines() throws Exception {
         List<TopNRow> rows = QueryEngine.allTopByRetainedSize(
             knownHeap, knownReg, "heapo.samples.KnownObjects$Bar", 1);
-        String jsonl = JsonlFormatter.format(rows);
+        String jsonl = JsonlFormatter.formatTopN(rows);
         assertTrue(jsonl.contains("\"rank\":0"), "JSONL must contain rank");
         assertTrue(jsonl.contains("\"type\":\"heapo.samples.KnownObjects$Bar\""), "JSONL must contain type");
         assertTrue(jsonl.contains("\"retainedSize\":"), "JSONL must contain retainedSize");
@@ -90,5 +90,113 @@ class QueryEngineTest {
         for (int i = 0; i < rows.size(); i++) {
             assertEquals(i, rows.get(i).rank());
         }
+    }
+
+    // ── Phase 6: AGGREGATE COUNT ──────────────────────────────────────────────
+
+    @Test
+    void aggregateCountFooReturnsExpectedCount() throws Exception {
+        long count = QueryEngine.aggregateCount(knownHeap, knownReg,
+            "heapo.samples.KnownObjects$Foo");
+        assertTrue(count >= 2, "Expected >= 2 Foo instances; got " + count);
+    }
+
+    @Test
+    void aggregateCountStarReturnsTotalObjects() throws Exception {
+        long count = QueryEngine.aggregateCount(knownHeap, knownReg, "*");
+        assertEquals(knownHeap.objectCount(), count, "ALL * count should equal objectCount");
+    }
+
+    @Test
+    void aggregateCountMissingClassReturnsZero() throws Exception {
+        long count = QueryEngine.aggregateCount(knownHeap, knownReg,
+            "heapo.samples.NonExistentClass");
+        assertEquals(0, count);
+    }
+
+    // ── Phase 6: CLASSES ──────────────────────────────────────────────────────
+
+    @Test
+    void classesListsAllClasses() throws Exception {
+        var classes = QueryEngine.classes(knownHeap, knownReg, null);
+        assertFalse(classes.isEmpty(), "Should find at least some classes");
+        boolean hasFoo = classes.stream()
+            .anyMatch(c -> c.className().contains("KnownObjects$Foo"));
+        assertTrue(hasFoo, "Should list KnownObjects$Foo");
+    }
+
+    @Test
+    void classesGlobFilter() throws Exception {
+        var classes = QueryEngine.classes(knownHeap, knownReg, "heapo.samples.*");
+        assertFalse(classes.isEmpty(), "Glob should match at least one class");
+        for (var c : classes) {
+            assertTrue(c.className().startsWith("heapo.samples."),
+                "All results should match glob; got " + c.className());
+        }
+    }
+
+    @Test
+    void classesAreOrderedByInstanceCountDescending() throws Exception {
+        var classes = QueryEngine.classes(knownHeap, knownReg, null);
+        for (int i = 0; i + 1 < classes.size(); i++) {
+            assertTrue(classes.get(i).instanceCount() >= classes.get(i + 1).instanceCount(),
+                "Should be sorted descending by instance count");
+        }
+    }
+
+    // ── Phase 6: EXPLAIN ─────────────────────────────────────────────────────
+
+    @Test
+    void explainReturnsPathToRoot() throws Exception {
+        // Find a Foo instance
+        var fooRows = QueryEngine.allTopByRetainedSize(
+            knownHeap, knownReg, "heapo.samples.KnownObjects$Foo", 1);
+        assertFalse(fooRows.isEmpty(), "Should find at least one Foo");
+        int fooDenseId = fooRows.get(0).denseId();
+
+        var path = QueryEngine.explain(knownHeap, knownReg, fooDenseId);
+        assertFalse(path.isEmpty(), "Explain path should not be empty");
+        assertEquals(fooDenseId, path.get(0).denseId(), "First node should be the queried object");
+        assertEquals(0, path.get(0).depth(), "Root depth should be 0");
+        // Depths should be monotonically increasing
+        for (int i = 0; i + 1 < path.size(); i++) {
+            assertEquals(i + 1, path.get(i + 1).depth());
+        }
+    }
+
+    // ── Phase 6: DslParser extensions ────────────────────────────────────────
+
+    @Test
+    void parserAggregateCount() {
+        var q = DslParser.parse("ALL heapo.samples.Foo AGGREGATE COUNT");
+        assertInstanceOf(DslParser.AggregateCount.class, q);
+        assertEquals("heapo.samples.Foo", ((DslParser.AggregateCount) q).className());
+    }
+
+    @Test
+    void parserClassesAll() {
+        var q = DslParser.parse("CLASSES");
+        assertInstanceOf(DslParser.ClassesQuery.class, q);
+        assertNull(((DslParser.ClassesQuery) q).glob());
+    }
+
+    @Test
+    void parserClassesMatching() {
+        var q = DslParser.parse("CLASSES MATCHING heapo.*");
+        assertInstanceOf(DslParser.ClassesQuery.class, q);
+        assertEquals("heapo.*", ((DslParser.ClassesQuery) q).glob());
+    }
+
+    @Test
+    void parserExplain() {
+        var q = DslParser.parse("EXPLAIN #42");
+        assertInstanceOf(DslParser.ExplainQuery.class, q);
+        assertEquals(42, ((DslParser.ExplainQuery) q).denseId());
+    }
+
+    @Test
+    void parserStatus() {
+        var q = DslParser.parse("STATUS");
+        assertInstanceOf(DslParser.StatusQuery.class, q);
     }
 }
