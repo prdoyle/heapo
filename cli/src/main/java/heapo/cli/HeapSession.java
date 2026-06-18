@@ -425,6 +425,14 @@ public final class HeapSession implements AutoCloseable {
                 for (int i = 0; i < len; i++) result[i] = bits[i] & refdBy[i];
                 yield result;
             }
+            case DslParser.ReachableFromFilter f -> {
+                long[] seedBits = resolveBitSetByName(f.name());
+                long[] reachable = QueryEngine.buildReachableFromBitSet(heap, registry, seedBits);
+                long[] result = new long[bits.length];
+                int len = Math.min(bits.length, reachable.length);
+                for (int i = 0; i < len; i++) result[i] = bits[i] & reachable[i];
+                yield result;
+            }
         };
     }
 

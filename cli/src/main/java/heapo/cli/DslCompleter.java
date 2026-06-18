@@ -22,7 +22,7 @@ final class DslCompleter implements Completer {
         "SELECT", "WITH", "exit", "quit"
     );
 
-    private static final List<String> PIPELINE_FILTERS = List.of("IN", "NOT", "RETAINED", "RETAINING", "OF", "SIZED", "REFERENCING", "REFERENCED");
+    private static final List<String> PIPELINE_FILTERS = List.of("IN", "NOT", "RETAINED", "RETAINING", "OF", "SIZED", "REFERENCING", "REFERENCED", "REACHABLE");
     private static final List<String> BUILTIN_NAMES = List.of(
         "GcRoots", "Threads", "ClassLoaders",
         "SoftReferences", "WeakReferences", "PhantomReferences");
@@ -83,7 +83,7 @@ final class DslCompleter implements Completer {
             }
             case 2 -> suggest(candidates, partial,
                 List.of("TOP", "BOTTOM", "RETAINING", "AGGREGATE", "IN", "NOT", "RETAINED",
-                        "OF", "SIZED", "REFERENCING", "REFERENCED"));
+                        "OF", "SIZED", "REFERENCING", "REFERENCED", "REACHABLE"));
             case 3 -> {
                 String w2 = words.get(2).toUpperCase();
                 if (w2.equals("AGGREGATE"))
@@ -150,6 +150,8 @@ final class DslCompleter implements Completer {
             if (w.equals("REFERENCING") && i + 1 < words.size()) { i += 2; continue; }
             if (w.equals("REFERENCED") && i + 1 < words.size()
                     && words.get(i + 1).equalsIgnoreCase("BY")) { i += 3; continue; }
+            if (w.equals("REACHABLE") && i + 1 < words.size()
+                    && words.get(i + 1).equalsIgnoreCase("FROM")) { i += 3; continue; }
             // Must be a terminal keyword — don't suggest more
             return;
         }

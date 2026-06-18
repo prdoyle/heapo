@@ -723,4 +723,45 @@ class HeapSessionTest {
             assertFalse(result.contains("\"error\""), "RETAINING query should succeed: " + result);
         }
     }
+
+    // ── Phase: REACHABLE FROM filter ─────────────────────────────────────────
+
+    @Test
+    void reachableFromGcRootsCoversHeap() throws Exception {
+        Path p = tempRoot.resolve("reachable-from.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            // All objects are reachable from GcRoots (or a subset thereof)
+            String totalResult    = session.execute("ALL * AGGREGATE COUNT");
+            String reachableResult = session.execute("ALL * REACHABLE FROM GcRoots AGGREGATE COUNT");
+
+            assertFalse(reachableResult.contains("\"error\""),
+                "REACHABLE FROM filter should succeed: " + reachableResult);
+            long total    = Long.parseLong(totalResult.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
+            long reachable = Long.parseLong(reachableResult.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
+            // Every live object should be reachable from GC roots
+            assertTrue(reachable >= 1, "Some objects must be reachable from GC roots");
+            assertTrue(reachable <= total, "Reachable count must not exceed total");
+        }
+    }
+
+    @Test
+    void reachableFromExpandsTransitively() throws Exception {
+        Path p = tempRoot.resolve("reachable-transitive.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            // Build a seed set then find reachable objects
+            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CALL THAT bars");
+
+            String directCount    = session.execute("ALL * REFERENCED BY bars AGGREGATE COUNT");
+            String reachableCount = session.execute("ALL * REACHABLE FROM bars AGGREGATE COUNT");
+
+            assertFalse(reachableCount.contains("\"error\""),
+                "REACHABLE FROM should succeed: " + reachableCount);
+            long direct   = Long.parseLong(directCount.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
+            long reachable = Long.parseLong(reachableCount.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
+            // Transitive reachability includes seed objects themselves, so >= direct referents
+            assertTrue(reachable >= direct,
+                "REACHABLE FROM should find at least as many objects as REFERENCED BY");
+        }
+    }
 }

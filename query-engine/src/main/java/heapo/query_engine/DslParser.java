@@ -30,7 +30,7 @@ public final class DslParser {
     public record NameSource(String name)       implements Source {}
     public record ThatSource()                  implements Source {}
 
-    public sealed interface Filter permits InFilter, NotInFilter, RetainedByFilter, RetainingFilter, OfTypeFilter, SizedFilter, ReferencingFilter, ReferencedByFilter {}
+    public sealed interface Filter permits InFilter, NotInFilter, RetainedByFilter, RetainingFilter, OfTypeFilter, SizedFilter, ReferencingFilter, ReferencedByFilter, ReachableFromFilter {}
     public record InFilter(String name)         implements Filter {}
     public record NotInFilter(String name)      implements Filter {}
     /** Keep only objects in the dominator subtree of any object in the named bitset. */
@@ -48,6 +48,8 @@ public final class DslParser {
     public record ReferencingFilter(String name)   implements Filter {}
     /** Keep objects that are directly referenced by any object in the named set (forward-refs). */
     public record ReferencedByFilter(String name)  implements Filter {}
+    /** Keep objects transitively reachable (by following forward refs) from any object in the named set. */
+    public record ReachableFromFilter(String name) implements Filter {}
 
     public sealed interface Terminal permits TopNTerminal, BottomNTerminal,
                                               AggregateCountTerminal, AggregateRetainedSizeTerminal {}
@@ -132,7 +134,9 @@ public final class DslParser {
                     && Set.of(">", ">=", "<", "<=", "=").contains(tokens[3]))
                 || (tokens[2].equalsIgnoreCase("REFERENCING") && tokens.length > 3)
                 || (tokens[2].equalsIgnoreCase("REFERENCED") && tokens.length > 4
-                    && tokens[3].equalsIgnoreCase("BY"))) {
+                    && tokens[3].equalsIgnoreCase("BY"))
+                || (tokens[2].equalsIgnoreCase("REACHABLE") && tokens.length > 4
+                    && tokens[3].equalsIgnoreCase("FROM"))) {
             return parsePipeline(new ClassSource(className), tokens, 2, input);
         }
 
@@ -238,6 +242,11 @@ public final class DslParser {
                     && idx + 2 < tokens.length
                     && tokens[idx + 1].equalsIgnoreCase("BY")) {
                 filters.add(new ReferencedByFilter(tokens[idx + 2]));
+                idx += 3;
+            } else if (tokens[idx].equalsIgnoreCase("REACHABLE")
+                    && idx + 2 < tokens.length
+                    && tokens[idx + 1].equalsIgnoreCase("FROM")) {
+                filters.add(new ReachableFromFilter(tokens[idx + 2]));
                 idx += 3;
             } else {
                 break;

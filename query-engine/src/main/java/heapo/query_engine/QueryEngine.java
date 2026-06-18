@@ -467,6 +467,38 @@ public final class QueryEngine {
     }
 
     /**
+     * Returns a bitset of all objects transitively reachable (following forward references)
+     * from any object in {@code seedBits}. The seed objects themselves are included.
+     *
+     * <p>This is an inclusive BFS over the reference graph — unlike {@code RETAINED BY},
+     * which uses the dominator tree, reachable objects may be shared with other parts of
+     * the heap and are not exclusively dominated by the seed.
+     */
+    public static long[] buildReachableFromBitSet(UnpackedHeap heap, IndexRegistry registry,
+                                                   long[] seedBits) throws IOException {
+        int objectCount = heap.objectCount();
+        long[] visited = Arrays.copyOf(seedBits, (objectCount + 63) >>> 6);
+        // Frontier: all seed objects
+        var frontier = new java.util.ArrayDeque<Integer>();
+        for (int u = 0; u < objectCount; u++) {
+            if ((seedBits[u >>> 6] >>> (u & 63) & 1L) != 0L) frontier.add(u);
+        }
+        try (var forwardRefs = registry.openForwardRefs()) {
+            while (!frontier.isEmpty()) {
+                int u = frontier.poll();
+                for (long e = forwardRefs.start(u), end = forwardRefs.end(u); e < end; e++) {
+                    int v = forwardRefs.edge(e);
+                    if ((visited[v >>> 6] >>> (v & 63) & 1L) == 0L) {
+                        visited[v >>> 6] |= 1L << (v & 63);
+                        frontier.add(v);
+                    }
+                }
+            }
+        }
+        return visited;
+    }
+
+    /**
      * Returns a bitset for one of the well-known built-in names, or {@code null} if
      * {@code name} is not a built-in.
      *

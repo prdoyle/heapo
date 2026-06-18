@@ -103,6 +103,7 @@ Queries compose as: **source** → zero or more **filters** → optional **termi
 | `SIZED > <bytes>` | Keep objects whose shallow (own field) size satisfies the comparison |
 | `REFERENCING <name>` | Keep objects that have a direct outgoing reference to any object in the named set |
 | `REFERENCED BY <name>` | Keep objects directly referenced (pointed to) by any object in the named set |
+| `REACHABLE FROM <name>` | Keep objects transitively reachable (by following forward refs) from any object in the named set |
 
 **Terminals** (materialise results):
 

@@ -68,6 +68,7 @@ public final class Main implements Runnable {
           SIZED > <bytes>                         keep objects whose shallow size satisfies comparison (>, >=, <, <=, =)
           REFERENCING <name>                      keep objects that directly reference any object in set
           REFERENCED BY <name>                    keep objects directly referenced by any object in set
+          REACHABLE FROM <name>                   keep objects transitively reachable from any object in set
 
         Output terminals (materialise the bitset):
           TOP <n> BY retainedSize                 largest-N objects
