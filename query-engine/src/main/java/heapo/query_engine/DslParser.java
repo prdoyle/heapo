@@ -30,11 +30,11 @@ public final class DslParser {
     public record NameSource(String name)       implements Source {}
     public record ThatSource()                  implements Source {}
 
-    public sealed interface Filter permits InFilter, NotInFilter, RetainedByFilter, RetainingFilter, OfTypeFilter, SizedFilter {}
+    public sealed interface Filter permits InFilter, NotInFilter, RetainedByFilter, RetainingFilter, OfTypeFilter, SizedFilter, ReferencingFilter, ReferencedByFilter {}
     public record InFilter(String name)         implements Filter {}
     public record NotInFilter(String name)      implements Filter {}
     /** Keep only objects in the dominator subtree of any object in the named bitset. */
-    public record RetainedByFilter(String name) implements Filter {}
+    public record RetainedByFilter(String name)   implements Filter {}
     /** Keep only objects whose retained size satisfies the comparison. */
     public record RetainingFilter(String op, long size) implements Filter {}
     /**
@@ -44,6 +44,10 @@ public final class DslParser {
     public record OfTypeFilter(String className, boolean exactly) implements Filter {}
     /** Keep only objects whose shallow size satisfies the comparison. */
     public record SizedFilter(String op, long size) implements Filter {}
+    /** Keep objects that have a direct reference to any object in the named set (reverse-refs). */
+    public record ReferencingFilter(String name)   implements Filter {}
+    /** Keep objects that are directly referenced by any object in the named set (forward-refs). */
+    public record ReferencedByFilter(String name)  implements Filter {}
 
     public sealed interface Terminal permits TopNTerminal, BottomNTerminal,
                                               AggregateCountTerminal, AggregateRetainedSizeTerminal {}
@@ -125,7 +129,10 @@ public final class DslParser {
                 || (tokens[2].equalsIgnoreCase("OF") && tokens.length > 4
                     && tokens[3].equalsIgnoreCase("TYPE"))
                 || (tokens[2].equalsIgnoreCase("SIZED") && tokens.length > 4
-                    && Set.of(">", ">=", "<", "<=", "=").contains(tokens[3]))) {
+                    && Set.of(">", ">=", "<", "<=", "=").contains(tokens[3]))
+                || (tokens[2].equalsIgnoreCase("REFERENCING") && tokens.length > 3)
+                || (tokens[2].equalsIgnoreCase("REFERENCED") && tokens.length > 4
+                    && tokens[3].equalsIgnoreCase("BY"))) {
             return parsePipeline(new ClassSource(className), tokens, 2, input);
         }
 
@@ -222,6 +229,15 @@ public final class DslParser {
                     && Set.of(">", ">=", "<", "<=", "=").contains(tokens[idx + 1])) {
                 long size = parseLong(tokens[idx + 2], input);
                 filters.add(new SizedFilter(tokens[idx + 1], size));
+                idx += 3;
+            } else if (tokens[idx].equalsIgnoreCase("REFERENCING")
+                    && idx + 1 < tokens.length) {
+                filters.add(new ReferencingFilter(tokens[idx + 1]));
+                idx += 2;
+            } else if (tokens[idx].equalsIgnoreCase("REFERENCED")
+                    && idx + 2 < tokens.length
+                    && tokens[idx + 1].equalsIgnoreCase("BY")) {
+                filters.add(new ReferencedByFilter(tokens[idx + 2]));
                 idx += 3;
             } else {
                 break;

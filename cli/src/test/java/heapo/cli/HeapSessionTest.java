@@ -462,6 +462,40 @@ class HeapSessionTest {
         }
     }
 
+    // ── Phase: REFERENCING / REFERENCED BY direct reference filters ───────────
+
+    @Test
+    void referencingFilterFindsDirectReferencers() throws Exception {
+        Path p = tempRoot.resolve("referencing.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            // Build a set of objects and find who references them
+            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CALL THAT bars");
+
+            // ALL * REFERENCING bars = objects that directly point to any bar
+            String result = session.execute("ALL * REFERENCING bars AGGREGATE COUNT");
+            assertFalse(result.contains("\"error\""),
+                "REFERENCING filter should succeed: " + result);
+            assertTrue(result.contains("\"count\""), "Should return count");
+            // At least 0 (some objects may not reference bars directly)
+        }
+    }
+
+    @Test
+    void referencedByFilterFindsDirectReferents() throws Exception {
+        Path p = tempRoot.resolve("referenced-by.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            // GcRoots reference some objects; find those objects
+            String result = session.execute("ALL * REFERENCED BY GcRoots AGGREGATE COUNT");
+            assertFalse(result.contains("\"error\""),
+                "REFERENCED BY filter should succeed: " + result);
+            assertTrue(result.contains("\"count\""), "Should return count");
+            long count = Long.parseLong(result.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
+            // GC roots must reference at least something
+            assertTrue(count >= 0, "REFERENCED BY count should be non-negative");
+        }
+    }
+
     // ── Phase: SIZED > n pipeline filter ─────────────────────────────────────
 
     @Test

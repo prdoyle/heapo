@@ -66,6 +66,8 @@ public final class Main implements Runnable {
           OF TYPE <class>                         keep objects of class or any subclass
           OF TYPE EXACTLY <class>                 keep objects of exactly that class
           SIZED > <bytes>                         keep objects whose shallow size satisfies comparison (>, >=, <, <=, =)
+          REFERENCING <name>                      keep objects that directly reference any object in set
+          REFERENCED BY <name>                    keep objects directly referenced by any object in set
 
         Output terminals (materialise the bitset):
           TOP <n> BY retainedSize                 largest-N objects

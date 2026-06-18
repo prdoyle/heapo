@@ -101,6 +101,8 @@ Queries compose as: **source** → zero or more **filters** → optional **termi
 | `OF TYPE <class>` | Keep objects whose runtime type is `class` or any subclass |
 | `OF TYPE EXACTLY <class>` | Keep objects whose runtime type is exactly `class` (no subclasses) |
 | `SIZED > <bytes>` | Keep objects whose shallow (own field) size satisfies the comparison |
+| `REFERENCING <name>` | Keep objects that have a direct outgoing reference to any object in the named set |
+| `REFERENCED BY <name>` | Keep objects directly referenced (pointed to) by any object in the named set |
 
 **Terminals** (materialise results):
 

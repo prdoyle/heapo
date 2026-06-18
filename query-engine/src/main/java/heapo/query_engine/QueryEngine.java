@@ -425,6 +425,48 @@ public final class QueryEngine {
     }
 
     /**
+     * Returns a bitset of all objects that have a direct outgoing reference to any object
+     * in {@code targetBits}.  Uses the reverse-reference index.
+     */
+    public static long[] buildReferencingBitSet(UnpackedHeap heap, IndexRegistry registry,
+                                                 long[] targetBits) throws IOException {
+        int objectCount = heap.objectCount();
+        long[] result = new long[(objectCount + 63) >>> 6];
+        try (var reverseRefs = registry.openReverseRefs()) {
+            for (int v = 0; v < objectCount; v++) {
+                if ((targetBits[v >>> 6] >>> (v & 63) & 1L) != 0L) {
+                    for (long e = reverseRefs.start(v), end = reverseRefs.end(v); e < end; e++) {
+                        int u = reverseRefs.edge(e);
+                        result[u >>> 6] |= 1L << (u & 63);
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Returns a bitset of all objects directly referenced (pointed to) by any object
+     * in {@code sourceBits}.  Uses the forward-reference index.
+     */
+    public static long[] buildReferencedByBitSet(UnpackedHeap heap, IndexRegistry registry,
+                                                  long[] sourceBits) throws IOException {
+        int objectCount = heap.objectCount();
+        long[] result = new long[(objectCount + 63) >>> 6];
+        try (var forwardRefs = registry.openForwardRefs()) {
+            for (int u = 0; u < objectCount; u++) {
+                if ((sourceBits[u >>> 6] >>> (u & 63) & 1L) != 0L) {
+                    for (long e = forwardRefs.start(u), end = forwardRefs.end(u); e < end; e++) {
+                        int v = forwardRefs.edge(e);
+                        result[v >>> 6] |= 1L << (v & 63);
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
      * Returns a bitset for one of the well-known built-in names, or {@code null} if
      * {@code name} is not a built-in.
      *
