@@ -1,6 +1,7 @@
 package heapo.query_engine;
 
 import heapo.indexes.IndexRegistry;
+import heapo.model.TopNRow;
 import heapo.unpack.Unpacker;
 import heapo.unpack.UnpackedHeap;
 import org.junit.jupiter.api.BeforeAll;
@@ -43,7 +44,7 @@ class QueryEngineTest {
 
     @Test
     void allBarTop1ReturnsSingleRow() throws Exception {
-        List<QueryEngine.Row> rows = QueryEngine.allTopByRetainedSize(
+        List<TopNRow> rows = QueryEngine.allTopByRetainedSize(
             knownHeap, knownReg, "heapo.samples.KnownObjects$Bar", 1);
 
         assertEquals(1, rows.size(), "Expected exactly 1 result");
@@ -56,21 +57,21 @@ class QueryEngineTest {
     @Test
     void allBarTop1RetainedSizeIncludesFooObjects() throws Exception {
         // bar1 → foo1 → foo2, so bar1 retains foo1 and foo2
-        List<QueryEngine.Row> barRows = QueryEngine.allTopByRetainedSize(
+        List<TopNRow> barRows = QueryEngine.allTopByRetainedSize(
             knownHeap, knownReg, "heapo.samples.KnownObjects$Bar", 1);
-        List<QueryEngine.Row> fooRows = QueryEngine.allTopByRetainedSize(
+        List<TopNRow> fooRows = QueryEngine.allTopByRetainedSize(
             knownHeap, knownReg, "heapo.samples.KnownObjects$Foo", 10);
 
         assertFalse(barRows.isEmpty(), "Bar query must return a result");
         long barRetained = barRows.get(0).retainedSize();
-        long fooMax      = fooRows.stream().mapToLong(QueryEngine.Row::retainedSize).max().orElse(0);
+        long fooMax      = fooRows.stream().mapToLong(TopNRow::retainedSize).max().orElse(0);
         assertTrue(barRetained >= fooMax,
             "bar retained (" + barRetained + ") should be >= any single foo retained (" + fooMax + ")");
     }
 
     @Test
     void jsonlFormatterProducesValidLines() throws Exception {
-        List<QueryEngine.Row> rows = QueryEngine.allTopByRetainedSize(
+        List<TopNRow> rows = QueryEngine.allTopByRetainedSize(
             knownHeap, knownReg, "heapo.samples.KnownObjects$Bar", 1);
         String jsonl = JsonlFormatter.format(rows);
         assertTrue(jsonl.contains("\"rank\":0"), "JSONL must contain rank");
@@ -82,7 +83,7 @@ class QueryEngineTest {
 
     @Test
     void allStarTop5ReturnsUpToFiveResults() throws Exception {
-        List<QueryEngine.Row> rows = QueryEngine.allTopByRetainedSize(
+        List<TopNRow> rows = QueryEngine.allTopByRetainedSize(
             knownHeap, knownReg, "*", 5);
         assertTrue(rows.size() <= 5 && rows.size() > 0, "Expected 1-5 results");
         // Verify ranks are in order

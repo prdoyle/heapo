@@ -52,7 +52,7 @@ val generateHprofFiles = tasks.register<JavaExec>("generateHprofFiles") {
     jvmArgs("--enable-preview")
 }
 
-listOf("unpack", "indexes", "query-engine").forEach { moduleName ->
+listOf("unpack", "indexes", "query-engine", "cli").forEach { moduleName ->
     project(":$moduleName") {
         tasks.named<Test>("test") {
             dependsOn(generateHprofFiles)

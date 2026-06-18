@@ -1,6 +1,7 @@
 package heapo.query_engine;
 
 import heapo.indexes.IndexRegistry;
+import heapo.model.TopNRow;
 import heapo.unpack.UnpackedHeap;
 
 import java.io.IOException;
@@ -12,10 +13,6 @@ import java.util.*;
  */
 public final class QueryEngine {
 
-    /** A single row in a TOP-N query result. */
-    public record Row(int rank, int denseId, String className,
-                      long retainedSize, long shallowSize) {}
-
     private QueryEngine() {}
 
     /**
@@ -23,8 +20,8 @@ public final class QueryEngine {
      *
      * @param className fully-qualified dotted class name, or {@code "*"} for all objects
      */
-    public static List<Row> allTopByRetainedSize(UnpackedHeap heap, IndexRegistry registry,
-                                                  String className, int n) throws IOException {
+    public static List<TopNRow> allTopByRetainedSize(UnpackedHeap heap, IndexRegistry registry,
+                                                      String className, int n) throws IOException {
         var names        = ClassNameIndex.load(heap);
         int objectCount  = heap.objectCount();
         boolean allObjs  = className.equals("*");
@@ -58,7 +55,7 @@ public final class QueryEngine {
         sorted.sort(Comparator.comparingInt(a -> a[1]));
 
         // Build result rows
-        List<Row> rows = new ArrayList<>(sorted.size());
+        List<TopNRow> rows = new ArrayList<>(sorted.size());
         try (var retained    = registry.openRetainedSize();
              var shallowSize = registry.openShallowSize();
              var classOf     = registry.openClassOf()) {
@@ -66,7 +63,7 @@ public final class QueryEngine {
             for (int i = 0; i < sorted.size(); i++) {
                 int v        = sorted.get(i)[0];
                 int classDid = classOf.readInt(v);
-                rows.add(new Row(i, v, names.nameOf(classDid),
+                rows.add(new TopNRow(i, v, names.nameOf(classDid),
                     retained.readLong(v), (long) shallowSize.readInt(v) * 8L));
             }
         }
