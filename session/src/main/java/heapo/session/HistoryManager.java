@@ -57,6 +57,13 @@ public final class HistoryManager {
                                   r.get(BF), r.get(ST), r.get(I1), r.get(I2)));
     }
 
+    public Optional<Entry> findById(int id) {
+        return ctx.selectFrom(T)
+            .where(ID.eq(id))
+            .fetchOptional(r -> new Entry(r.get(ID), r.get(CMD), r.get(TS),
+                                          r.get(BF), r.get(ST), r.get(I1), r.get(I2)));
+    }
+
     /** Returns the most recent history entry that has a non-null storage pointer. */
     public Optional<Entry> lastWithStorage() {
         return ctx.selectFrom(T)

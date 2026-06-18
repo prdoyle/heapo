@@ -68,6 +68,33 @@ public final class SqlRouter {
         return new TableAnswer(destTable, result.size());
     }
 
+    /** Fetch all rows from {@code tableName} and return them as JSONL. */
+    public String selectAsJsonl(String tableName) {
+        var result = ctx.fetch("SELECT * FROM " + DSL.name(tableName));
+        if (result.isEmpty()) return "";
+        var sb = new StringBuilder();
+        var fields = result.fields();
+        for (var row : result) {
+            sb.append('{');
+            for (int i = 0; i < fields.length; i++) {
+                if (i > 0) sb.append(',');
+                sb.append('"').append(fields[i].getName()).append("\":");
+                Object v = row.get(i);
+                if (v == null) {
+                    sb.append("null");
+                } else {
+                    String s = v.toString();
+                    try { Long.parseLong(s);  sb.append(s); }
+                    catch (NumberFormatException e) {
+                        sb.append('"').append(s.replace("\\", "\\\\").replace("\"", "\\\"")).append('"');
+                    }
+                }
+            }
+            sb.append("}\n");
+        }
+        return sb.toString();
+    }
+
     private static String stringify(Object v) {
         return v == null ? null : v.toString();
     }

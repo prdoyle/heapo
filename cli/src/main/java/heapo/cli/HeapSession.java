@@ -50,7 +50,11 @@ public final class HeapSession implements AutoCloseable {
 
         // ── Session commands ──────────────────────────────────────────────────
         if (trimmed.equalsIgnoreCase("NAMES")) return handleNames();
+        if (trimmed.equalsIgnoreCase("THAT"))  return that instanceof VoidAnswer
+                                                   ? "{\"error\":\"THAT is empty\"}\n"
+                                                   : handleRecall(thatHistoryId());
         if (trimmed.equalsIgnoreCase("UNDO"))  return handleUndo();
+        if (trimmed.matches("@\\d+"))          return handleRecall(Integer.parseInt(trimmed.substring(1)));
         if (trimmed.matches("(?i)HISTORY(\\s+\\d+)?")) return handleHistory(trimmed);
         if (trimmed.matches("(?i)CALL\\s+THAT\\s+\\S+")) return handleCallThat(trimmed);
         if (trimmed.matches("(?i)CALL\\s+@\\d+\\s+\\S+")) return handleCallById(trimmed);
@@ -133,6 +137,13 @@ public final class HeapSession implements AutoCloseable {
         int forgetId = history.record(cmd, System.currentTimeMillis());
         if (oldHistId != null) history.setInputs(forgetId, oldHistId, null);
         return "{\"forgot\":\"" + escJson(name) + "\"}\n";
+    }
+
+    private String handleRecall(int histId) throws IOException, SQLException {
+        var entry = history.findById(histId);
+        if (entry.isEmpty()) return "{\"error\":\"No history entry @" + histId + "\"}\n";
+        if (entry.get().sqlTable() != null) return sql.selectAsJsonl(entry.get().sqlTable());
+        return handleQuery(entry.get().command());
     }
 
     private String handleUndo() throws SQLException {
