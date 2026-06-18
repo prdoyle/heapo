@@ -20,8 +20,10 @@ public final class IndexFile implements AutoCloseable {
 
     // All index files are written by DataOutputStream, which is big-endian.
     // Use explicit big-endian layouts so reads on any platform match the written bytes.
-    private static final ValueLayout.OfInt  INT_BE  = ValueLayout.JAVA_INT .withOrder(ByteOrder.BIG_ENDIAN);
-    private static final ValueLayout.OfLong LONG_BE = ValueLayout.JAVA_LONG.withOrder(ByteOrder.BIG_ENDIAN);
+    private static final ValueLayout.OfByte  BYTE_LAYOUT = ValueLayout.JAVA_BYTE;
+    private static final ValueLayout.OfShort SHORT_BE = ValueLayout.JAVA_SHORT.withOrder(ByteOrder.BIG_ENDIAN);
+    private static final ValueLayout.OfInt   INT_BE   = ValueLayout.JAVA_INT  .withOrder(ByteOrder.BIG_ENDIAN);
+    private static final ValueLayout.OfLong  LONG_BE  = ValueLayout.JAVA_LONG .withOrder(ByteOrder.BIG_ENDIAN);
 
     private IndexFile(Arena arena, MemorySegment segment) {
         this.arena   = arena;
@@ -66,6 +68,15 @@ public final class IndexFile implements AutoCloseable {
 
     public long readLong(long index)              { return segment.get(LONG_BE, index * 8L); }
     public void writeLong(long index, long value) { segment.set(LONG_BE, index * 8L, value); }
+
+    /** Read a single byte at an arbitrary byte offset (e.g. within a field-value record). */
+    public byte  readByteAt(long byteOffset)  { return segment.get(BYTE_LAYOUT, byteOffset); }
+    /** Read a big-endian short at an arbitrary byte offset. */
+    public short readShortAt(long byteOffset) { return segment.get(SHORT_BE, byteOffset); }
+    /** Read a big-endian int at an arbitrary byte offset. */
+    public int   readIntAt(long byteOffset)   { return segment.get(INT_BE, byteOffset); }
+    /** Read a big-endian long at an arbitrary byte offset. */
+    public long  readLongAt(long byteOffset)  { return segment.get(LONG_BE, byteOffset); }
 
     /** Number of int elements (byteSize / 4). */
     public long intCount()  { return segment.byteSize() / 4; }

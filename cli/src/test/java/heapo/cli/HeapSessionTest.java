@@ -764,4 +764,62 @@ class HeapSessionTest {
                 "REACHABLE FROM should find at least as many objects as REFERENCED BY");
         }
     }
+
+    // ── Phase: WHERE primitive field filter ───────────────────────────────────
+
+    @Test
+    void whereFilterMatchesExactValue() throws Exception {
+        // KnownObjects.Foo has int size: foo1.size=42, foo2.size=99
+        Path p = tempRoot.resolve("where-exact.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            String result = session.execute(
+                "ALL heapo.samples.KnownObjects$Foo WHERE size = 42 AGGREGATE COUNT");
+            assertFalse(result.contains("\"error\""), "WHERE exact should succeed: " + result);
+            long count = Long.parseLong(result.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
+            assertEquals(1L, count, "Exactly one Foo has size=42");
+        }
+    }
+
+    @Test
+    void whereFilterRejectsNonMatching() throws Exception {
+        Path p = tempRoot.resolve("where-no-match.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            String result = session.execute(
+                "ALL heapo.samples.KnownObjects$Foo WHERE size = 0 AGGREGATE COUNT");
+            assertFalse(result.contains("\"error\""), "WHERE no-match should succeed: " + result);
+            long count = Long.parseLong(result.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
+            assertEquals(0L, count, "No Foo has size=0");
+        }
+    }
+
+    @Test
+    void whereFilterGreaterThan() throws Exception {
+        // foo1.size=42, foo2.size=99 — both > 10, one > 50
+        Path p = tempRoot.resolve("where-gt.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            String allResult = session.execute(
+                "ALL heapo.samples.KnownObjects$Foo WHERE size > 10 AGGREGATE COUNT");
+            String oneResult = session.execute(
+                "ALL heapo.samples.KnownObjects$Foo WHERE size > 50 AGGREGATE COUNT");
+            assertFalse(allResult.contains("\"error\""), "WHERE > 10 should succeed: " + allResult);
+            assertFalse(oneResult.contains("\"error\""), "WHERE > 50 should succeed: " + oneResult);
+            long allCount = Long.parseLong(allResult.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
+            long oneCount = Long.parseLong(oneResult.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
+            assertEquals(2L, allCount, "Both Foos have size > 10");
+            assertEquals(1L, oneCount, "One Foo has size > 50 (size=99)");
+        }
+    }
+
+    @Test
+    void whereFilterOnBarCount() throws Exception {
+        // KnownObjects.Bar has int count: bar1.count=7
+        Path p = tempRoot.resolve("where-bar.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            String result = session.execute(
+                "ALL heapo.samples.KnownObjects$Bar WHERE count = 7 AGGREGATE COUNT");
+            assertFalse(result.contains("\"error\""), "WHERE Bar.count should succeed: " + result);
+            long count = Long.parseLong(result.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
+            assertEquals(1L, count, "Exactly one Bar has count=7");
+        }
+    }
 }

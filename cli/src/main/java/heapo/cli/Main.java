@@ -69,6 +69,7 @@ public final class Main implements Runnable {
           REFERENCING <name>                      keep objects that directly reference any object in set
           REFERENCED BY <name>                    keep objects directly referenced by any object in set
           REACHABLE FROM <name>                   keep objects transitively reachable from any object in set
+          WHERE <field> <op> <value>              keep objects whose primitive field satisfies comparison (>, >=, <, <=, =)
 
         Output terminals (materialise the bitset):
           TOP <n> BY retainedSize                 largest-N objects
@@ -246,8 +247,10 @@ public final class Main implements Runnable {
                     }
                     var cs   = (DslParser.ClassSource) p.source();
                     long[] b = QueryEngine.buildBitSet(heap, reg, cs.className());
+                    String contextClass = cs.className().equals("*") ? null : cs.className();
                     // Apply session-independent filters
                     for (var filter : p.filters()) {
+                        if (filter instanceof DslParser.OfTypeFilter f) contextClass = f.className();
                         if (filter instanceof DslParser.RetainingFilter f) {
                             int objectCount = heap.objectCount();
                             long[] result = new long[b.length];
@@ -274,6 +277,18 @@ public final class Main implements Runnable {
                             int len = Math.min(b.length, typeBits.length);
                             for (int i = 0; i < len; i++) result[i] = b[i] & typeBits[i];
                             b = result;
+                        } else if (filter instanceof DslParser.WhereFilter f) {
+                            if (contextClass != null) {
+                                var names = ClassNameIndex.load(heap);
+                                int cid   = names.resolve(contextClass);
+                                if (cid >= 0) {
+                                    long val = f.rawValue().equalsIgnoreCase("true")  ? 1L
+                                             : f.rawValue().equalsIgnoreCase("false") ? 0L
+                                             : Long.parseLong(f.rawValue());
+                                    b = QueryEngine.buildWhereFilterBitSet(heap, reg, b, cid,
+                                            f.fieldName(), f.op(), val);
+                                }
+                            }
                         }
                     }
                     yield switch (p.terminal()) {

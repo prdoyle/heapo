@@ -1,7 +1,9 @@
 package heapo.query_engine;
 
+import heapo.indexes.IndexFile;
 import heapo.indexes.IndexRegistry;
 import heapo.model.*;
+import heapo.unpack.HprofReader;
 import heapo.unpack.UnpackedHeap;
 
 import java.io.IOException;
@@ -496,6 +498,67 @@ public final class QueryEngine {
             }
         }
         return visited;
+    }
+
+    /**
+     * Returns a bitset keeping only objects from {@code inputBits} whose primitive field
+     * {@code fieldName} satisfies {@code op longValue}.
+     *
+     * <p>{@code classDenseId} must be the dense ID of the class whose field schema to use.
+     * The schema covers all primitive fields declared by that class and its ancestors.
+     * {@code longValue} for booleans: 1 = true, 0 = false.
+     */
+    public static long[] buildWhereFilterBitSet(
+            UnpackedHeap heap, IndexRegistry registry,
+            long[] inputBits, int classDenseId,
+            String fieldName, String op, long longValue) throws IOException {
+        List<IndexRegistry.FieldDef> schema = registry.loadFieldSchema(classDenseId);
+        IndexRegistry.FieldDef field = null;
+        for (var fd : schema) {
+            if (fd.name().equals(fieldName)) { field = fd; break; }
+        }
+        if (field == null)
+            throw new IllegalArgumentException("Field '" + fieldName + "' not found in schema");
+
+        int recordSize  = IndexRegistry.fieldRecordSize(schema);
+        int byteOff     = field.byteOffset();
+        int typeCode    = field.typeCode();
+        long[] result   = new long[(heap.objectCount() + 63) >>> 6];
+
+        try (var il = registry.openInstanceList();
+             var fv = registry.openFieldValues(classDenseId)) {
+            long start = il.start(classDenseId);
+            long end   = il.end(classDenseId);
+            int  idx   = 0;
+            for (long e = start; e < end; e++, idx++) {
+                int denseId = il.edge(e);
+                if ((inputBits[denseId >>> 6] >>> (denseId & 63) & 1L) == 0L) continue;
+                long val = readPrimitive(fv, (long) idx * recordSize + byteOff, typeCode);
+                if (matchesOp(val, op, longValue)) result[denseId >>> 6] |= 1L << (denseId & 63);
+            }
+        }
+        return result;
+    }
+
+    private static long readPrimitive(IndexFile fv, long byteOffset, int typeCode) {
+        return switch (typeCode) {
+            case HprofReader.TYPE_BOOLEAN, HprofReader.TYPE_BYTE -> fv.readByteAt(byteOffset);
+            case HprofReader.TYPE_CHAR, HprofReader.TYPE_SHORT   -> fv.readShortAt(byteOffset);
+            case HprofReader.TYPE_FLOAT, HprofReader.TYPE_INT    -> fv.readIntAt(byteOffset);
+            case HprofReader.TYPE_DOUBLE, HprofReader.TYPE_LONG  -> fv.readLongAt(byteOffset);
+            default -> 0L;
+        };
+    }
+
+    private static boolean matchesOp(long value, String op, long threshold) {
+        return switch (op) {
+            case ">"  -> value >  threshold;
+            case ">=" -> value >= threshold;
+            case "<"  -> value <  threshold;
+            case "<=" -> value <= threshold;
+            case "="  -> value == threshold;
+            default   -> false;
+        };
     }
 
     /**

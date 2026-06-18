@@ -349,6 +349,26 @@ public final class HeapSession implements AutoCloseable {
             "'" + name + "' is a table result, not a bitset — use SQL SELECT to query it");
     }
 
+    private long[] applyWhereFilter(long[] bits, DslParser.WhereFilter f, String contextClass)
+            throws IOException {
+        if (contextClass == null)
+            throw new IllegalArgumentException(
+                "WHERE requires a class context — use ALL <class> or add OF TYPE <class> before WHERE");
+        ClassNameIndex nameIndex = ClassNameIndex.load(heap);
+        int classDenseId = nameIndex.resolve(contextClass);
+        if (classDenseId < 0)
+            throw new IllegalArgumentException("Unknown class: '" + contextClass + "'");
+        long longValue = parseWhereValue(f.rawValue());
+        return QueryEngine.buildWhereFilterBitSet(heap, registry, bits, classDenseId,
+                                                   f.fieldName(), f.op(), longValue);
+    }
+
+    private static long parseWhereValue(String raw) {
+        if (raw.equalsIgnoreCase("true"))  return 1L;
+        if (raw.equalsIgnoreCase("false")) return 0L;
+        return Long.parseLong(raw);
+    }
+
     private long[] applyFilter(long[] bits, DslParser.Filter filter)
             throws IOException, SQLException {
         return switch (filter) {
@@ -433,6 +453,8 @@ public final class HeapSession implements AutoCloseable {
                 for (int i = 0; i < len; i++) result[i] = bits[i] & reachable[i];
                 yield result;
             }
+            case DslParser.WhereFilter ignored ->
+                throw new IllegalStateException("WhereFilter must be handled in executePipeline");
         };
     }
 
@@ -450,7 +472,22 @@ public final class HeapSession implements AutoCloseable {
     private String executePipeline(DslParser.Pipeline p, int histId)
             throws IOException, SQLException {
         long[] bits = resolveSource(p.source());
-        for (var filter : p.filters()) bits = applyFilter(bits, filter);
+
+        // Track the current type context for WHERE field lookups.
+        // Starts from the pipeline source; updated by each OfTypeFilter encountered.
+        String contextClass = switch (p.source()) {
+            case DslParser.ClassSource cs -> cs.className().equals("*") ? null : cs.className();
+            default -> null;
+        };
+
+        for (var filter : p.filters()) {
+            if (filter instanceof DslParser.OfTypeFilter f) contextClass = f.className();
+            if (filter instanceof DslParser.WhereFilter f) {
+                bits = applyWhereFilter(bits, f, contextClass);
+            } else {
+                bits = applyFilter(bits, filter);
+            }
+        }
 
         if (p.terminal() == null) {
             that = new BitSetAnswer(bits, heap.objectCount());

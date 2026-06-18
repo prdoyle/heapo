@@ -104,6 +104,7 @@ Queries compose as: **source** → zero or more **filters** → optional **termi
 | `REFERENCING <name>` | Keep objects that have a direct outgoing reference to any object in the named set |
 | `REFERENCED BY <name>` | Keep objects directly referenced (pointed to) by any object in the named set |
 | `REACHABLE FROM <name>` | Keep objects transitively reachable (by following forward refs) from any object in the named set |
+| `WHERE <field> <op> <value>` | Keep objects whose primitive field satisfies the comparison (`>` `>=` `<` `<=` `=`). Class context required (use `ALL <class>` or add `OF TYPE <class>` before WHERE). Value is a number or `true`/`false`. |
 
 **Terminals** (materialise results):
 

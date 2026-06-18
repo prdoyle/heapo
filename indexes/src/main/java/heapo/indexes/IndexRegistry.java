@@ -1,9 +1,11 @@
 package heapo.indexes;
 
+import heapo.unpack.HprofReader;
 import heapo.unpack.UnpackedHeap;
 
 import java.io.IOException;
 import java.nio.file.*;
+import java.util.*;
 
 /**
  * Manages lazy building and cached access to all derived indexes.
@@ -143,6 +145,49 @@ public final class IndexRegistry implements AutoCloseable {
     /** Opens the list of GC root dense IDs (written during unpack, always present). */
     public IndexFile openGcRoots() throws IOException {
         return IndexFile.openRead(indexDir.resolve("gc-roots.bin"));
+    }
+
+    // ── Field-value index ─────────────────────────────────────────────────────
+
+    /**
+     * Describes one primitive field in a class's field-value record.
+     * {@code byteOffset} is the byte offset within each instance's packed record.
+     */
+    public record FieldDef(String name, int typeCode, int byteOffset) {}
+
+    /**
+     * Loads the field schema for the given class dense ID.
+     * Returns an empty list if no primitive field data was indexed for this class.
+     * Fields are listed in HPROF declaration order (most-derived class first).
+     */
+    public List<FieldDef> loadFieldSchema(int classDenseId) throws IOException {
+        Path schemaPath = heap.outputDir().resolve("fields/" + classDenseId + ".schema");
+        if (!Files.exists(schemaPath)) return List.of();
+        List<FieldDef> defs = new ArrayList<>();
+        int offset = 0;
+        for (String line : Files.readAllLines(schemaPath)) {
+            String[] parts = line.split("\t", 2);
+            if (parts.length < 2) continue;
+            int typeCode = Integer.parseInt(parts[1].trim());
+            defs.add(new FieldDef(parts[0], typeCode, offset));
+            offset += HprofReader.primitiveTypeSize(typeCode);
+        }
+        return Collections.unmodifiableList(defs);
+    }
+
+    /** Total size in bytes of one instance's packed primitive record for the given schema. */
+    public static int fieldRecordSize(List<FieldDef> schema) {
+        if (schema.isEmpty()) return 0;
+        FieldDef last = schema.getLast();
+        return last.byteOffset() + HprofReader.primitiveTypeSize(last.typeCode());
+    }
+
+    /**
+     * Opens the packed primitive field-value file for the given class dense ID.
+     * Record {@code i} starts at byte offset {@code i * fieldRecordSize(schema)}.
+     */
+    public IndexFile openFieldValues(int classDenseId) throws IOException {
+        return IndexFile.openRead(heap.outputDir().resolve("fields/" + classDenseId + ".bin"));
     }
 
     @Override public void close() { /* readers are opened/closed by callers */ }

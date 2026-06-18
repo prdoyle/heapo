@@ -25,12 +25,12 @@ public final class DslParser {
 
     // ── Pipeline building blocks ──────────────────────────────────────────────
 
-    public sealed interface Source permits ClassSource, NameSource, ThatSource {}
+    public sealed interface Source {}
     public record ClassSource(String className) implements Source {}
     public record NameSource(String name)       implements Source {}
     public record ThatSource()                  implements Source {}
 
-    public sealed interface Filter permits InFilter, NotInFilter, RetainedByFilter, RetainingFilter, OfTypeFilter, SizedFilter, ReferencingFilter, ReferencedByFilter, ReachableFromFilter {}
+    public sealed interface Filter {}
     public record InFilter(String name)         implements Filter {}
     public record NotInFilter(String name)      implements Filter {}
     /** Keep only objects in the dominator subtree of any object in the named bitset. */
@@ -50,9 +50,13 @@ public final class DslParser {
     public record ReferencedByFilter(String name)  implements Filter {}
     /** Keep objects transitively reachable (by following forward refs) from any object in the named set. */
     public record ReachableFromFilter(String name) implements Filter {}
+    /**
+     * Keep objects whose primitive field satisfies the comparison.
+     * {@code rawValue} is the literal token from the DSL (numeric or {@code true}/{@code false}).
+     */
+    public record WhereFilter(String fieldName, String op, String rawValue) implements Filter {}
 
-    public sealed interface Terminal permits TopNTerminal, BottomNTerminal,
-                                              AggregateCountTerminal, AggregateRetainedSizeTerminal {}
+    public sealed interface Terminal {}
     public record TopNTerminal(int n)         implements Terminal {}
     public record BottomNTerminal(int n)      implements Terminal {}
     public record AggregateCountTerminal()    implements Terminal {}
@@ -61,18 +65,7 @@ public final class DslParser {
 
     // ── Top-level Query types ─────────────────────────────────────────────────
 
-    public sealed interface Query permits
-            AllSource,
-            AllTopByRetainedSize,
-            AllBottomByRetainedSize,
-            AllRetaining,
-            AggregateCount,
-            AggregateRetainedSize,
-            ClassesQuery,
-            ExplainQuery,
-            DominatorSubtree,
-            Pipeline,
-            StatusQuery {}
+    public sealed interface Query {}
 
     /** {@code ALL <class>} alone — all instances as a bitset; implicit top-N display. */
     public record AllSource(String className) implements Query {}
@@ -136,7 +129,9 @@ public final class DslParser {
                 || (tokens[2].equalsIgnoreCase("REFERENCED") && tokens.length > 4
                     && tokens[3].equalsIgnoreCase("BY"))
                 || (tokens[2].equalsIgnoreCase("REACHABLE") && tokens.length > 4
-                    && tokens[3].equalsIgnoreCase("FROM"))) {
+                    && tokens[3].equalsIgnoreCase("FROM"))
+                || (tokens[2].equalsIgnoreCase("WHERE") && tokens.length > 5
+                    && Set.of(">", ">=", "<", "<=", "=").contains(tokens[4]))) {
             return parsePipeline(new ClassSource(className), tokens, 2, input);
         }
 
@@ -248,6 +243,11 @@ public final class DslParser {
                     && tokens[idx + 1].equalsIgnoreCase("FROM")) {
                 filters.add(new ReachableFromFilter(tokens[idx + 2]));
                 idx += 3;
+            } else if (tokens[idx].equalsIgnoreCase("WHERE")
+                    && idx + 3 < tokens.length
+                    && Set.of(">", ">=", "<", "<=", "=").contains(tokens[idx + 2])) {
+                filters.add(new WhereFilter(tokens[idx + 1], tokens[idx + 2], tokens[idx + 3]));
+                idx += 4;
             } else {
                 break;
             }

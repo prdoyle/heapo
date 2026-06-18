@@ -303,7 +303,7 @@ public final class HprofReader {
         };
     }
 
-    static int primitiveTypeSize(int type) {
+    public static int primitiveTypeSize(int type) {
         return switch (type) {
             case TYPE_BOOLEAN, TYPE_BYTE  -> 1;
             case TYPE_CHAR, TYPE_SHORT    -> 2;

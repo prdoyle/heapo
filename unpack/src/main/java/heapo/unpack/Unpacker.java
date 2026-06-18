@@ -8,6 +8,7 @@ import java.nio.file.*;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * Produces core index files from an HPROF file.
@@ -33,9 +34,11 @@ public final class Unpacker {
         Path scratchIdMap      = tempDir.resolve("id-map.bin");
         Path scratchEdges      = tempDir.resolve("edges.bin");
         Path scratchClassOfRaw = tempDir.resolve("class-of-raw.bin");
+        Path fieldValuesTempDir = tempDir.resolve("fields-tmp");
+        Files.createDirectories(fieldValuesTempDir);
 
         var handler = new ScanHandler(scratchIdMap, scratchEdges, scratchClassOfRaw,
-                                      indexDir.resolve("shallow-size.bin"));
+                                      indexDir.resolve("shallow-size.bin"), fieldValuesTempDir);
         new HprofReader(hprofFile).read(handler);
         handler.closeStreams();
 
@@ -54,7 +57,14 @@ public final class Unpacker {
         buildSuperClassOf(handler.superClasses, indexDir, sortedRawIds, denseIds, objectCount);
         buildGcRoots(handler.gcRootRawIds, indexDir, sortedRawIds, denseIds);
 
+        // Build field-value index: per-class primitive field files + schemas
+        Path fieldsDir = outputDir.resolve("fields");
+        Files.createDirectories(fieldsDir);
+        finaliseFieldValues(handler, fieldValuesTempDir, fieldsDir);
+        writeFieldSchemas(handler, fieldsDir);
+
         deleteIfExists(scratchIdMap, scratchEdges, scratchClassOfRaw);
+        try { Files.delete(fieldValuesTempDir); } catch (IOException ignored) {}
         try { Files.delete(tempDir); } catch (IOException ignored) {}
 
         writeManifest(hprofFile, objectCount, classCount, outputDir.resolve("manifest.json"));
@@ -68,11 +78,13 @@ public final class Unpacker {
     static final class ScanHandler extends BaseHprofHandler {
 
         // Small maps — bounded by class/string count
-        final Map<Long, String>  strings      = new HashMap<>();
-        final Map<Long, Long>    classNameIds = new HashMap<>();  // classObjectId → nameStringId
-        final Map<Long, Long>    superClasses = new HashMap<>();  // classObjectId → superRawId
-        final Map<Long, byte[]>  classFields  = new HashMap<>();  // classObjectId → field types
-        final Map<Long, Integer> instanceSizes = new HashMap<>(); // classObjectId → instanceSize
+        final Map<Long, String>  strings       = new HashMap<>();
+        final Map<Long, Long>    classNameIds  = new HashMap<>();  // classObjectId → nameStringId
+        final Map<Long, Long>    superClasses  = new HashMap<>();  // classObjectId → superRawId
+        final Map<Long, byte[]>  classFields   = new HashMap<>();  // classObjectId → field types
+        final Map<Long, long[]>  classFieldNames = new HashMap<>(); // classObjectId → field name string IDs
+        final Map<Long, Integer> instanceSizes = new HashMap<>();   // classObjectId → instanceSize
+        final Map<Long, Integer> classDenseIds = new HashMap<>();   // classObjectId → dense ID
 
         // Detected in loadClass (LOAD_CLASS records precede HEAP_DUMP in the file)
         long javaLangClassRawId = 0;
@@ -87,12 +99,18 @@ public final class Unpacker {
         private final DataOutputStream classOfRawOut;
         private final DataOutputStream shallowSizeOut;
 
+        // Per-class primitive field value streams: keyed by class dense ID.
+        // Written to fieldValuesTempDir; finalised post-scan.
+        private final Path fieldValuesTempDir;
+        final Map<Integer, DataOutputStream> fieldValueStreams = new LinkedHashMap<>();
+
         ScanHandler(Path scratchIdMap, Path scratchEdges, Path scratchClassOfRaw,
-                    Path shallowSizePath) throws IOException {
-            idMapOut       = dataOut(scratchIdMap);
-            edgesOut       = dataOut(scratchEdges);
-            classOfRawOut  = dataOut(scratchClassOfRaw);
-            shallowSizeOut = dataOut(shallowSizePath);
+                    Path shallowSizePath, Path fieldValuesTempDir) throws IOException {
+            idMapOut           = dataOut(scratchIdMap);
+            edgesOut           = dataOut(scratchEdges);
+            classOfRawOut      = dataOut(scratchClassOfRaw);
+            shallowSizeOut     = dataOut(shallowSizePath);
+            this.fieldValuesTempDir = fieldValuesTempDir;
         }
 
         void closeStreams() throws IOException {
@@ -100,6 +118,7 @@ public final class Unpacker {
             edgesOut.close();
             classOfRawOut.close();
             shallowSizeOut.close();
+            for (DataOutputStream out : fieldValueStreams.values()) out.close();
         }
 
         // ── HprofHandler callbacks ────────────────────────────────────────────
@@ -127,7 +146,9 @@ public final class Unpacker {
             classCount++;
             superClasses.put(classObjectId, superClassId);
             classFields.put(classObjectId, fieldTypes);
+            classFieldNames.put(classObjectId, fieldNameIds.clone());
             instanceSizes.put(classObjectId, instanceSize);
+            classDenseIds.put(classObjectId, denseId);
 
             emitIdMap(classObjectId, denseId);
             // Class objects are instances of java.lang.Class
@@ -152,6 +173,7 @@ public final class Unpacker {
             classOfRawOut.writeLong(classObjectId);
             shallowSizeOut.writeInt(shallowShift(size));
             parseInstanceRefs(denseId, classObjectId, data);
+            writeFieldValues(classObjectId, data);
         }
 
         @Override
@@ -228,6 +250,43 @@ public final class Unpacker {
                 Long superRaw = superClasses.get(curClass);
                 curClass = (superRaw != null && superRaw != 0) ? superRaw : 0;
             }
+        }
+
+        private void writeFieldValues(long classObjectId, byte[] data) throws IOException {
+            byte[] primBytes = extractPrimitives(classObjectId, ByteBuffer.wrap(data));
+            if (primBytes.length == 0) return;
+            Integer classDenseId = classDenseIds.get(classObjectId);
+            if (classDenseId == null) return;
+            DataOutputStream out = fieldValueStreams.get(classDenseId);
+            if (out == null) {
+                out = dataOut(fieldValuesTempDir.resolve(classDenseId + ".bin.tmp"));
+                fieldValueStreams.put(classDenseId, out);
+            }
+            out.write(primBytes);
+        }
+
+        private byte[] extractPrimitives(long classObjectId, ByteBuffer buf) {
+            var primBuf = new ByteArrayOutputStream();
+            long curClass = classObjectId;
+            while (curClass != 0 && buf.hasRemaining()) {
+                byte[] ftypes = classFields.get(curClass);
+                if (ftypes == null) break;
+                for (byte ftype : ftypes) {
+                    int type = ftype & 0xFF;
+                    int size = HprofReader.typeSize(type, idSize());
+                    if (buf.remaining() < size) return primBuf.toByteArray();
+                    if (type == HprofReader.TYPE_OBJECT) {
+                        buf.position(buf.position() + size);
+                    } else {
+                        byte[] val = new byte[size];
+                        buf.get(val);
+                        primBuf.write(val, 0, val.length);
+                    }
+                }
+                Long superRaw = superClasses.get(curClass);
+                curClass = (superRaw != null && superRaw != 0) ? superRaw : 0;
+            }
+            return primBuf.toByteArray();
         }
 
         private static int shallowShift(long size) {
@@ -369,6 +428,51 @@ public final class Unpacker {
         }
         try (var out = dataOut(indexDir.resolve("gc-roots.bin"))) {
             for (int id : roots) out.writeInt(id);
+        }
+    }
+
+    // ── Post-scan: field values ───────────────────────────────────────────────
+
+    private static void finaliseFieldValues(ScanHandler handler, Path tempDir, Path fieldsDir)
+            throws IOException {
+        for (int classDenseId : handler.fieldValueStreams.keySet()) {
+            Path src = tempDir.resolve(classDenseId + ".bin.tmp");
+            Path dst = fieldsDir.resolve(classDenseId + ".bin");
+            if (Files.exists(src)) Files.move(src, dst, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    private static void writeFieldSchemas(ScanHandler handler, Path fieldsDir) throws IOException {
+        // Inverse map: classDenseId → classObjectId (raw)
+        Map<Integer, Long> denseToRaw = new HashMap<>();
+        for (var e : handler.classDenseIds.entrySet()) denseToRaw.put(e.getValue(), e.getKey());
+
+        for (int classDenseId : handler.fieldValueStreams.keySet()) {
+            Long rawId = denseToRaw.get(classDenseId);
+            if (rawId == null) continue;
+
+            List<String> lines = new ArrayList<>();
+            long curClass = rawId;
+            while (curClass != 0) {
+                byte[] ftypes   = handler.classFields.get(curClass);
+                long[] fnameIds = handler.classFieldNames.get(curClass);
+                if (ftypes == null) break;
+                for (int i = 0; i < ftypes.length; i++) {
+                    int type = ftypes[i] & 0xFF;
+                    if (type == HprofReader.TYPE_OBJECT) continue;
+                    String name = (fnameIds != null && i < fnameIds.length)
+                        ? handler.strings.getOrDefault(fnameIds[i], "field_" + i)
+                        : "field_" + i;
+                    lines.add(name + "\t" + type);
+                }
+                Long superRaw = handler.superClasses.get(curClass);
+                curClass = (superRaw != null && superRaw != 0) ? superRaw : 0;
+            }
+
+            if (!lines.isEmpty()) {
+                Files.writeString(fieldsDir.resolve(classDenseId + ".schema"),
+                    String.join("\n", lines) + "\n");
+            }
         }
     }
 
