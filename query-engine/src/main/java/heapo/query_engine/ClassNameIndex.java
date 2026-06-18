@@ -45,4 +45,9 @@ public final class ClassNameIndex {
     public Set<String> allSlashedNames() {
         return Collections.unmodifiableSet(slashedNameToDenseId.keySet());
     }
+
+    /** All class names in dotted form. */
+    public Collection<String> allDottedNames() {
+        return Collections.unmodifiableCollection(denseIdToDottedName.values());
+    }
 }

@@ -66,4 +66,14 @@ public final class HistoryManager {
             .fetchOptional(r -> new Entry(r.get(ID), r.get(CMD), r.get(TS),
                                           r.get(BF), r.get(ST), r.get(I1), r.get(I2)));
     }
+
+    /** Returns the most recent CALL or FORGET command, if any. */
+    public Optional<Entry> lastUndoable() {
+        return ctx.selectFrom(T)
+            .where(DSL.upper(CMD).like("CALL %").or(DSL.upper(CMD).like("FORGET %")))
+            .orderBy(ID.desc())
+            .limit(1)
+            .fetchOptional(r -> new Entry(r.get(ID), r.get(CMD), r.get(TS),
+                                          r.get(BF), r.get(ST), r.get(I1), r.get(I2)));
+    }
 }

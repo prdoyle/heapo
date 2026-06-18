@@ -50,6 +50,7 @@ public final class HeapSession implements AutoCloseable {
 
         // ── Session commands ──────────────────────────────────────────────────
         if (trimmed.equalsIgnoreCase("NAMES")) return handleNames();
+        if (trimmed.equalsIgnoreCase("UNDO"))  return handleUndo();
         if (trimmed.matches("(?i)HISTORY(\\s+\\d+)?")) return handleHistory(trimmed);
         if (trimmed.matches("(?i)CALL\\s+THAT\\s+\\S+")) return handleCallThat(trimmed);
         if (trimmed.matches("(?i)CALL\\s+#\\d+\\s+\\S+")) return handleCallById(trimmed);
@@ -62,7 +63,8 @@ public final class HeapSession implements AutoCloseable {
         return handleQuery(trimmed);
     }
 
-    public Answer getThat() { return that; }
+    public Answer getThat()       { return that;  }
+    public NamesManager names()   { return names; }
 
     // ── Session command handlers ──────────────────────────────────────────────
 
@@ -118,11 +120,46 @@ public final class HeapSession implements AutoCloseable {
         return "{\"bound\":\"" + escJson(name) + "\",\"historyId\":" + targetId + "}\n";
     }
 
-    private String handleForget(String cmd) {
+    private String handleForget(String cmd) throws SQLException {
         String name = cmd.split("\\s+")[1];
+        // Record the old binding in input1 so UNDO can restore it
+        Integer oldHistId = names.resolve(name).orElse(null);
         names.forget(name);
-        history.record(cmd, System.currentTimeMillis());
+        int forgetId = history.record(cmd, System.currentTimeMillis());
+        if (oldHistId != null) history.setInputs(forgetId, oldHistId, null);
         return "{\"forgot\":\"" + escJson(name) + "\"}\n";
+    }
+
+    private String handleUndo() throws SQLException {
+        var entry = history.lastUndoable();
+        if (entry.isEmpty()) return "{\"error\":\"nothing to undo\"}\n";
+
+        String cmd   = entry.get().command();
+        String upper = cmd.stripLeading().toUpperCase();
+        int undoId   = history.record("UNDO", System.currentTimeMillis());
+
+        if (upper.startsWith("CALL ")) {
+            String name = cmd.strip().split("\\s+")[2]; // CALL THAT <name> or CALL #id <name>
+            names.forget(name);
+            Integer displaced = entry.get().input2();
+            if (displaced != null) names.bind(name, displaced);
+            history.setInputs(undoId, entry.get().id(), null);
+            String msg = displaced != null
+                ? "{\"undone\":\"CALL\",\"name\":\"" + escJson(name) + "\",\"restored\":" + displaced + "}"
+                : "{\"undone\":\"CALL\",\"name\":\"" + escJson(name) + "\"}";
+            return msg + "\n";
+        }
+
+        if (upper.startsWith("FORGET ")) {
+            String name = cmd.strip().split("\\s+")[1];
+            Integer oldHistId = entry.get().input1();
+            if (oldHistId == null) return "{\"error\":\"cannot undo FORGET: old binding not recorded\"}\n";
+            names.bind(name, oldHistId);
+            history.setInputs(undoId, entry.get().id(), null);
+            return "{\"undone\":\"FORGET\",\"name\":\"" + escJson(name) + "\",\"restored\":" + oldHistId + "}\n";
+        }
+
+        return "{\"error\":\"last undoable command was not a CALL or FORGET\"}\n";
     }
 
     private String handleSql(String cmd) {

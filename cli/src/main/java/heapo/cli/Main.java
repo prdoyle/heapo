@@ -43,6 +43,11 @@ public final class Main implements Callable<Integer> {
             description = "Run a single query and exit (same as passing query as positional args)")
     String quickQuery;
 
+    @Option(names = {"--output"},
+            description = "Output format: jsonl (default), json, human",
+            defaultValue = "jsonl")
+    String outputFormat;
+
     @Override
     public Integer call() throws IOException, SQLException {
         Path outDir = heapDir != null ? heapDir
@@ -96,7 +101,14 @@ public final class Main implements Callable<Integer> {
                 "{\"objectCount\":" + heap.objectCount() + ",\"classCount\":" + heap.classCount() + "}\n";
         };
 
-        System.out.print(output);
+        OutputFormatter.Format fmt;
+        try {
+            fmt = OutputFormatter.Format.valueOf(outputFormat.toUpperCase());
+        } catch (IllegalArgumentException e) {
+            System.err.println("Error: unknown output format '" + outputFormat + "'. Use jsonl, json, or human.");
+            return 1;
+        }
+        System.out.print(OutputFormatter.convert(output, fmt));
         return 0;
     }
 
@@ -108,6 +120,7 @@ public final class Main implements Callable<Integer> {
             var reader = LineReaderBuilder.builder()
                 .terminal(terminal)
                 .history(new DefaultHistory())
+                .completer(new DslCompleter(heap, session.names()))
                 .build();
 
             while (true) {

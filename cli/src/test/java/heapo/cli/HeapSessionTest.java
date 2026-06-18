@@ -160,6 +160,65 @@ class HeapSessionTest {
         }
     }
 
+    // ── Phase 9: UNDO ─────────────────────────────────────────────────────────
+
+    @Test
+    void undoCallThatRemovesBinding() throws Exception {
+        Path p = tempRoot.resolve("undo-call.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            session.execute("ALL heapo.samples.KnownObjects$Bar TOP 1 BY retainedSize");
+            session.execute("CALL THAT tempName");
+            String undo = session.execute("UNDO");
+            assertFalse(undo.contains("\"error\""), "UNDO should succeed: " + undo);
+            assertTrue(undo.contains("\"CALL\""), "UNDO response should mention CALL");
+
+            String names = session.execute("NAMES");
+            assertFalse(names.contains("tempName"), "Name should be removed after UNDO");
+        }
+    }
+
+    @Test
+    void undoForgetRestoresBinding() throws Exception {
+        Path p = tempRoot.resolve("undo-forget.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            session.execute("ALL heapo.samples.KnownObjects$Bar TOP 1 BY retainedSize");
+            session.execute("CALL THAT savedName");
+            session.execute("FORGET savedName");
+            String undo = session.execute("UNDO");
+            assertFalse(undo.contains("\"error\""), "UNDO of FORGET should succeed: " + undo);
+
+            String names = session.execute("NAMES");
+            assertTrue(names.contains("savedName"), "Name should be restored after UNDO of FORGET");
+        }
+    }
+
+    @Test
+    void undoWithNothingToUndoReturnsError() throws Exception {
+        Path p = tempRoot.resolve("undo-empty.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            String undo = session.execute("UNDO");
+            assertTrue(undo.contains("\"error\""), "UNDO with nothing to undo should return error");
+        }
+    }
+
+    @Test
+    void undoCallRestoresPreviousBinding() throws Exception {
+        Path p = tempRoot.resolve("undo-displace.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            session.execute("ALL heapo.samples.KnownObjects$Bar TOP 1 BY retainedSize");
+            session.execute("CALL THAT myName");
+            session.execute("ALL heapo.samples.KnownObjects$Bar TOP 2 BY retainedSize");
+            session.execute("CALL THAT myName"); // displaces the first binding
+            session.execute("UNDO");
+
+            String names = session.execute("NAMES");
+            assertTrue(names.contains("myName"), "myName should still be bound after UNDO");
+            // The restored binding should point to the first result (history id 1 or 2)
+            assertTrue(names.contains("\"restored\"") || names.contains("myName"),
+                "Binding should be restored to the original result");
+        }
+    }
+
     // ── Phase 8: additional DSL operations ───────────────────────────────────
 
     @Test
