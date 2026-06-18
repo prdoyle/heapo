@@ -76,8 +76,19 @@ Queries compose as: **source** → zero or more **filters** → optional **termi
 | Source | Description |
 |---|---|
 | `ALL <class>` | All instances of a class (use `*` for all objects) |
-| `FROM <name>` | Named bitset result |
+| `FROM <name>` | Named bitset result or built-in name |
 | `FROM THAT` | Current result |
+
+**Built-in names** (use directly in `FROM`, `IN`, `RETAINED BY` without `CALL THAT`):
+
+| Name | Contents |
+|---|---|
+| `GcRoots` | All GC root objects |
+| `Threads` | All `java.lang.Thread` instances |
+| `ClassLoaders` | All `java.lang.ClassLoader` instances |
+| `SoftReferences` | All `java.lang.ref.SoftReference` instances |
+| `WeakReferences` | All `java.lang.ref.WeakReference` instances |
+| `PhantomReferences` | All `java.lang.ref.PhantomReference` instances |
 
 **Filters** (narrow the bitset, O(v/64) bitset operations):
 

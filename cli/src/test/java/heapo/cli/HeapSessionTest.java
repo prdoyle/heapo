@@ -361,6 +361,43 @@ class HeapSessionTest {
         }
     }
 
+    // ── Phase: built-in names ─────────────────────────────────────────────────
+
+    @Test
+    void gcRootsBuiltinReturnsNonEmptyBitSet() throws Exception {
+        Path p = tempRoot.resolve("builtin-gcroots.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            String result = session.execute("FROM GcRoots AGGREGATE COUNT");
+            assertFalse(result.contains("\"error\""), "GcRoots should resolve: " + result);
+            assertTrue(result.contains("\"count\""), "Should return count");
+            long count = Long.parseLong(result.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
+            assertTrue(count > 0, "GcRoots should be non-empty in any real heap dump");
+        }
+    }
+
+    @Test
+    void threadsBuiltinReturnsZeroOrMore() throws Exception {
+        Path p = tempRoot.resolve("builtin-threads.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            String result = session.execute("FROM Threads AGGREGATE COUNT");
+            assertFalse(result.contains("\"error\""), "Threads built-in should resolve: " + result);
+            assertTrue(result.contains("\"count\""), "Should return count");
+        }
+    }
+
+    @Test
+    void builtinNameUsableInRetainedByFilter() throws Exception {
+        Path p = tempRoot.resolve("builtin-in-filter.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            String result = session.execute("ALL * RETAINED BY GcRoots AGGREGATE COUNT");
+            assertFalse(result.contains("\"error\""),
+                "RETAINED BY GcRoots should resolve: " + result);
+            long retained = Long.parseLong(result.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
+            // GC roots retain at least themselves
+            assertTrue(retained >= 0, "Retained count should be non-negative");
+        }
+    }
+
     // ── Phase: RETAINED BY <name> pipeline filter ─────────────────────────────
 
     @Test

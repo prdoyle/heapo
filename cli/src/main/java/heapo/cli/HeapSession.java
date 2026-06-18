@@ -305,6 +305,10 @@ public final class HeapSession implements AutoCloseable {
     }
 
     private long[] resolveBitSetByName(String name) throws IOException, SQLException {
+        // Built-in names resolve without session state
+        long[] builtin = QueryEngine.buildBuiltinBitSet(heap, registry, name);
+        if (builtin != null) return builtin;
+
         int histId = names.resolve(name)
             .orElseThrow(() -> new IllegalArgumentException("Unknown name: '" + name + "'"));
         var entry = history.findById(histId)

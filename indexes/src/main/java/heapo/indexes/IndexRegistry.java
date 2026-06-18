@@ -140,6 +140,11 @@ public final class IndexRegistry implements AutoCloseable {
             indexDir.resolve("dominator-children-edges.bin"));
     }
 
+    /** Opens the list of GC root dense IDs (written during unpack, always present). */
+    public IndexFile openGcRoots() throws IOException {
+        return IndexFile.openRead(indexDir.resolve("gc-roots.bin"));
+    }
+
     @Override public void close() { /* readers are opened/closed by callers */ }
 
     // ── Private ───────────────────────────────────────────────────────────────

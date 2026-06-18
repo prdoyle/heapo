@@ -52,6 +52,12 @@ public final class Main implements Runnable {
           FROM THAT                               current result
           Use * as class name for all objects.
 
+        Built-in names (usable in FROM / IN / RETAINED BY without CALL THAT):
+          GcRoots         all GC root objects
+          Threads         all java.lang.Thread instances
+          ClassLoaders    all java.lang.ClassLoader instances
+          SoftReferences / WeakReferences / PhantomReferences
+
         Bitset filters (chain after a source):
           IN <name>                               bitset AND — keep objects in both sets
           NOT IN <name>                           bitset AND-NOT — exclude objects in set

@@ -23,6 +23,9 @@ final class DslCompleter implements Completer {
     );
 
     private static final List<String> PIPELINE_FILTERS = List.of("IN", "NOT", "RETAINED");
+    private static final List<String> BUILTIN_NAMES = List.of(
+        "GcRoots", "Threads", "ClassLoaders",
+        "SoftReferences", "WeakReferences", "PhantomReferences");
     private static final List<String> PIPELINE_TERMINALS =
         List.of("TOP", "BOTTOM", "AGGREGATE");
 
@@ -98,11 +101,17 @@ final class DslCompleter implements Completer {
         }
     }
 
+    private List<String> allNameSuggestions() {
+        var list = new ArrayList<>(BUILTIN_NAMES);
+        list.addAll(names.all().keySet());
+        return list;
+    }
+
     private void completeFrom(List<String> words, int idx, String partial, List<Candidate> candidates) {
         if (idx == 1) {
-            // Source: THAT or a user-defined name
+            // Source: THAT, built-in names, or user-defined names
             var opts = new ArrayList<>(List.of("THAT"));
-            opts.addAll(names.all().keySet());
+            opts.addAll(allNameSuggestions());
             suggest(candidates, partial, opts);
             return;
         }
@@ -137,10 +146,10 @@ final class DslCompleter implements Completer {
             // One token into an incomplete filter — figure out which
             String prev = words.get(i - 1).toUpperCase();
             switch (prev) {
-                case "IN"       -> suggest(candidates, partial, new ArrayList<>(names.all().keySet()));
+                case "IN"       -> suggest(candidates, partial, allNameSuggestions());
                 case "NOT"      -> suggest(candidates, partial, List.of("IN"));
                 case "RETAINED" -> suggest(candidates, partial, List.of("BY"));
-                case "BY"       -> suggest(candidates, partial, new ArrayList<>(names.all().keySet()));
+                case "BY"       -> suggest(candidates, partial, allNameSuggestions());
             }
         }
     }

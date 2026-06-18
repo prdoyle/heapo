@@ -374,6 +374,39 @@ public final class QueryEngine {
     }
 
     /**
+     * Returns a bitset for one of the well-known built-in names, or {@code null} if
+     * {@code name} is not a built-in.
+     *
+     * <p>Built-in names: {@code GcRoots}, {@code Threads}, {@code ClassLoaders},
+     * {@code SoftReferences}, {@code WeakReferences}, {@code PhantomReferences}.
+     * Note: {@code Threads}, {@code ClassLoaders}, and reference types use exact class
+     * matching — subclasses are not included.
+     */
+    public static long[] buildBuiltinBitSet(UnpackedHeap heap, IndexRegistry registry,
+                                             String name) throws IOException {
+        return switch (name) {
+            case "GcRoots" -> {
+                int objectCount = heap.objectCount();
+                long[] bits = new long[(objectCount + 63) >>> 6];
+                try (var gcRoots = registry.openGcRoots()) {
+                    long count = gcRoots.intCount();
+                    for (long i = 0; i < count; i++) {
+                        int v = gcRoots.readInt(i);
+                        if (v >= 0 && v < objectCount) bits[v >>> 6] |= 1L << (v & 63);
+                    }
+                }
+                yield bits;
+            }
+            case "Threads"          -> buildBitSet(heap, registry, "java.lang.Thread");
+            case "ClassLoaders"     -> buildBitSet(heap, registry, "java.lang.ClassLoader");
+            case "SoftReferences"   -> buildBitSet(heap, registry, "java.lang.ref.SoftReference");
+            case "WeakReferences"   -> buildBitSet(heap, registry, "java.lang.ref.WeakReference");
+            case "PhantomReferences"-> buildBitSet(heap, registry, "java.lang.ref.PhantomReference");
+            default                 -> null;
+        };
+    }
+
+    /**
      * Expands {@code retainerBits} to include every object in the dominator subtree of
      * any object set in {@code retainerBits}.  Equivalent to the union of
      * {@link #dominatorSubtree} results for each individual retainer object.
