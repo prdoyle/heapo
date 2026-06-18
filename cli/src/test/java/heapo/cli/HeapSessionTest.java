@@ -282,6 +282,85 @@ class HeapSessionTest {
         }
     }
 
+    // ── Phase: Pipeline (FROM / IN / NOT IN) ─────────────────────────────────
+
+    @Test
+    void fromThatAfterAllClassWorks() throws Exception {
+        Path p = tempRoot.resolve("from-that.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            String result = session.execute("FROM THAT TOP 5 BY retainedSize");
+            assertFalse(result.contains("\"error\""), "FROM THAT should succeed: " + result);
+            assertTrue(result.contains("\"rank\""), "Should show ranked rows");
+        }
+    }
+
+    @Test
+    void fromNamedBitSetWorks() throws Exception {
+        Path p = tempRoot.resolve("from-named.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CALL THAT bars");
+            String result = session.execute("FROM bars TOP 5 BY retainedSize");
+            assertFalse(result.contains("\"error\""), "FROM <name> should succeed: " + result);
+            assertTrue(result.contains("\"rank\""), "Should show ranked rows");
+        }
+    }
+
+    @Test
+    void inFilterNarrowsSet() throws Exception {
+        Path p = tempRoot.resolve("in-filter.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            // ALL * gives the full heap; bars is a subset
+            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CALL THAT bars");
+
+            // ALL * IN bars should be the same as bars
+            String result = session.execute("ALL * IN bars TOP 100 BY retainedSize");
+            assertFalse(result.contains("\"error\""), "IN filter should succeed: " + result);
+
+            // Result must only contain Bar instances
+            for (String line : result.lines().filter(l -> !l.isBlank()).toList()) {
+                assertTrue(line.contains("KnownObjects$Bar"),
+                    "IN bars should only return Bar objects; got: " + line);
+            }
+        }
+    }
+
+    @Test
+    void notInFilterExcludesSet() throws Exception {
+        Path p = tempRoot.resolve("not-in-filter.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CALL THAT bars");
+
+            // ALL * NOT IN bars should contain no Bar instances
+            String result = session.execute("ALL * NOT IN bars TOP 100 BY retainedSize");
+            assertFalse(result.contains("\"error\""), "NOT IN filter should succeed: " + result);
+
+            for (String line : result.lines().filter(l -> !l.isBlank()).toList()) {
+                assertFalse(line.contains("KnownObjects$Bar"),
+                    "NOT IN bars should exclude Bar objects; got: " + line);
+            }
+        }
+    }
+
+    @Test
+    void fromNameAggregateCount() throws Exception {
+        Path p = tempRoot.resolve("from-agg.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CALL THAT bars");
+
+            String allCount  = session.execute("ALL heapo.samples.KnownObjects$Bar AGGREGATE COUNT");
+            String fromCount = session.execute("FROM bars AGGREGATE COUNT");
+
+            assertFalse(fromCount.contains("\"error\""), "FROM <name> AGGREGATE COUNT should succeed");
+            // Both should report the same count
+            assertTrue(fromCount.contains("\"count\""), "Should have count field");
+        }
+    }
+
     // ── REPL output formatting ────────────────────────────────────────────────
 
     @Test

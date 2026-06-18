@@ -417,6 +417,62 @@ public final class QueryEngine {
         return rows;
     }
 
+    /**
+     * Returns the bottom {@code n} objects in the bitset ordered by retained size ascending.
+     */
+    public static List<TopNRow> bottomNFromBitSet(UnpackedHeap heap, IndexRegistry registry,
+                                                   long[] bits, int n) throws IOException {
+        var names       = ClassNameIndex.load(heap);
+        int objectCount = heap.objectCount();
+
+        // Keep N objects with the LARGEST ranks (= smallest retained sizes).
+        // Min-heap keyed by rank: pops smallest rank (= largest retained) when overfull.
+        PriorityQueue<int[]> bottomN = new PriorityQueue<>(n + 1,
+            (a, b) -> Integer.compare(a[1], b[1]));
+
+        try (var rank = registry.openRetainedSizeRank()) {
+            for (int v = 0; v < objectCount; v++) {
+                if ((bits[v >>> 6] >>> (v & 63) & 1L) != 0L) {
+                    bottomN.offer(new int[]{v, rank.readInt(v)});
+                    if (bottomN.size() > n) bottomN.poll();
+                }
+            }
+        }
+
+        // rank desc = retained size asc
+        List<int[]> sorted = new ArrayList<>(bottomN);
+        sorted.sort((a, b) -> Integer.compare(b[1], a[1]));
+
+        List<TopNRow> rows = new ArrayList<>(sorted.size());
+        try (var retained    = registry.openRetainedSize();
+             var shallowSize = registry.openShallowSize();
+             var classOf     = registry.openClassOf()) {
+            for (int i = 0; i < sorted.size(); i++) {
+                int v        = sorted.get(i)[0];
+                int classDid = classOf.readInt(v);
+                rows.add(new TopNRow(i + 1, v, names.nameOf(classDid),
+                    retained.readLong(v), (long) shallowSize.readInt(v) * 8L));
+            }
+        }
+        return rows;
+    }
+
+    /** Computes MAX or SUM of retained sizes over all set bits in {@code bits}. */
+    public static long aggregateFromBitSet(UnpackedHeap heap, IndexRegistry registry,
+                                            long[] bits, String func) throws IOException {
+        int objectCount = heap.objectCount();
+        long acc = func.equals("SUM") ? 0 : Long.MIN_VALUE;
+        try (var retained = registry.openRetainedSize()) {
+            for (int v = 0; v < objectCount; v++) {
+                if ((bits[v >>> 6] >>> (v & 63) & 1L) != 0L) {
+                    long rs = retained.readLong(v);
+                    acc = func.equals("SUM") ? acc + rs : Math.max(acc, rs);
+                }
+            }
+        }
+        return func.equals("MAX") && acc == Long.MIN_VALUE ? 0 : acc;
+    }
+
     private static boolean matchGlob(String s, String pattern) {
         return s.matches(pattern.replace(".", "\\.").replace("*", ".*").replace("?", "."));
     }

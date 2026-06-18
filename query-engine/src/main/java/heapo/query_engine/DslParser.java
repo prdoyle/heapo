@@ -1,16 +1,19 @@
 package heapo.query_engine;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 
 /**
  * DSL parser. Supported queries:
  * <ul>
+ *   <li>{@code ALL <class>} — bitset of all instances (pipeline source)
  *   <li>{@code ALL <class> TOP <n> BY retainedSize}
  *   <li>{@code ALL <class> BOTTOM <n> BY retainedSize}
  *   <li>{@code ALL <class> RETAINING > <bytes>}
- *   <li>{@code ALL <class> AGGREGATE COUNT}
- *   <li>{@code ALL <class> AGGREGATE MAX retainedSize}
- *   <li>{@code ALL <class> AGGREGATE SUM retainedSize}
+ *   <li>{@code ALL <class> AGGREGATE COUNT/MAX/SUM retainedSize}
+ *   <li>{@code FROM <name> | FROM THAT} — named/current bitset as source
+ *   <li>{@code <source> [IN <name>]* [NOT IN <name>]* [<terminal>]} — composable pipeline
  *   <li>{@code CLASSES [MATCHING <glob>]}
  *   <li>{@code EXPLAIN #<denseId>}
  *   <li>{@code RETAINED BY #<id> [TOP n BY retainedSize]}
@@ -19,6 +22,27 @@ import java.util.Set;
  * {@code <class>} is a fully-qualified dotted class name or {@code *} for all objects.
  */
 public final class DslParser {
+
+    // ── Pipeline building blocks ──────────────────────────────────────────────
+
+    public sealed interface Source permits ClassSource, NameSource, ThatSource {}
+    public record ClassSource(String className) implements Source {}
+    public record NameSource(String name)       implements Source {}
+    public record ThatSource()                  implements Source {}
+
+    public sealed interface Filter permits InFilter, NotInFilter {}
+    public record InFilter(String name)    implements Filter {}
+    public record NotInFilter(String name) implements Filter {}
+
+    public sealed interface Terminal permits TopNTerminal, BottomNTerminal,
+                                              AggregateCountTerminal, AggregateRetainedSizeTerminal {}
+    public record TopNTerminal(int n)         implements Terminal {}
+    public record BottomNTerminal(int n)      implements Terminal {}
+    public record AggregateCountTerminal()    implements Terminal {}
+    /** {@code func} is {@code "MAX"} or {@code "SUM"}. */
+    public record AggregateRetainedSizeTerminal(String func) implements Terminal {}
+
+    // ── Top-level Query types ─────────────────────────────────────────────────
 
     public sealed interface Query permits
             AllSource,
@@ -30,14 +54,15 @@ public final class DslParser {
             ClassesQuery,
             ExplainQuery,
             DominatorSubtree,
+            Pipeline,
             StatusQuery {}
 
-    /** {@code ALL <class>} — all instances as a bitset source; requires an output terminal to display. */
+    /** {@code ALL <class>} alone — all instances as a bitset; implicit top-N display. */
     public record AllSource(String className) implements Query {}
     public record AllTopByRetainedSize(String className, int n) implements Query {}
     /** Smallest-retained-size N instances of className. */
     public record AllBottomByRetainedSize(String className, int n) implements Query {}
-    /** All instances with retained size satisfying the comparison (op = ">", ">=", "<", "<="). */
+    /** All instances with retained size satisfying the comparison. */
     public record AllRetaining(String className, String op, long size) implements Query {}
     public record AggregateCount(String className) implements Query {}
     /** MAX or SUM of retainedSize across all instances of className. */
@@ -46,6 +71,11 @@ public final class DslParser {
     public record ExplainQuery(int denseId) implements Query {}
     /** All objects in the dominator subtree of denseId, optionally limited to top n. */
     public record DominatorSubtree(int denseId, int topN) implements Query {} // topN=-1 = all
+    /**
+     * A composable pipeline: source → filters → terminal.
+     * {@code terminal == null} means implicit top-N display; result stored as BitSetAnswer.
+     */
+    public record Pipeline(Source source, List<Filter> filters, Terminal terminal) implements Query {}
     public record StatusQuery() implements Query {}
 
     private DslParser() {}
@@ -55,14 +85,15 @@ public final class DslParser {
         if (tokens.length == 0) throw new IllegalArgumentException("Empty query");
 
         return switch (tokens[0].toUpperCase()) {
-            case "ALL"       -> parseAll(tokens, input);
-            case "TOP"       -> parseAll(withAllAndClass("*", tokens), input);
-            case "BOTTOM"    -> parseAll(withAllAndClass("*", tokens), input);
-            case "CLASSES"   -> parseClasses(tokens);
-            case "EXPLAIN"   -> parseExplain(tokens);
-            case "RETAINED"  -> parseRetainedBy(tokens);
-            case "STATUS"    -> new StatusQuery();
-            default          -> throw new IllegalArgumentException("Unrecognised query: " + input);
+            case "ALL"      -> parseAll(tokens, input);
+            case "TOP"      -> parseAll(withAllAndClass("*", tokens), input);
+            case "BOTTOM"   -> parseAll(withAllAndClass("*", tokens), input);
+            case "FROM"     -> parseFrom(tokens, input);
+            case "CLASSES"  -> parseClasses(tokens);
+            case "EXPLAIN"  -> parseExplain(tokens);
+            case "RETAINED" -> parseRetainedBy(tokens);
+            case "STATUS"   -> new StatusQuery();
+            default         -> throw new IllegalArgumentException("Unrecognised query: " + input);
         };
     }
 
@@ -72,6 +103,13 @@ public final class DslParser {
 
         // ALL <class> alone — a bitset source with no output terminal
         if (tokens.length == 2) return new AllSource(className);
+
+        // Detect pipeline filter keywords — route to Pipeline
+        if (tokens[2].equalsIgnoreCase("IN")
+                || (tokens[2].equalsIgnoreCase("NOT") && tokens.length > 3
+                    && tokens[3].equalsIgnoreCase("IN"))) {
+            return parsePipeline(new ClassSource(className), tokens, 2, input);
+        }
 
         // ALL <class> TOP n BY retainedSize
         if (tokens.length >= 6
@@ -116,6 +154,68 @@ public final class DslParser {
         }
 
         throw bad(input);
+    }
+
+    private static Query parseFrom(String[] tokens, String input) {
+        if (tokens.length < 2) throw bad(input);
+        Source source = tokens[1].equalsIgnoreCase("THAT")
+            ? new ThatSource()
+            : new NameSource(tokens[1]);
+        return parsePipeline(source, tokens, 2, input);
+    }
+
+    private static Query parsePipeline(Source source, String[] tokens, int idx, String input) {
+        var filters = new ArrayList<Filter>();
+
+        while (idx < tokens.length) {
+            if (tokens[idx].equalsIgnoreCase("IN")) {
+                if (idx + 1 >= tokens.length) throw bad(input);
+                filters.add(new InFilter(tokens[idx + 1]));
+                idx += 2;
+            } else if (tokens[idx].equalsIgnoreCase("NOT")
+                    && idx + 2 < tokens.length
+                    && tokens[idx + 1].equalsIgnoreCase("IN")) {
+                filters.add(new NotInFilter(tokens[idx + 2]));
+                idx += 3;
+            } else {
+                break;
+            }
+        }
+
+        Terminal terminal = idx < tokens.length ? parseTerminal(tokens, idx, input) : null;
+        return new Pipeline(source, List.copyOf(filters), terminal);
+    }
+
+    private static Terminal parseTerminal(String[] tokens, int i, String input) {
+        return switch (tokens[i].toUpperCase()) {
+            case "TOP" -> {
+                if (i + 3 < tokens.length
+                        && tokens[i + 2].equalsIgnoreCase("BY")
+                        && tokens[i + 3].equalsIgnoreCase("retainedSize")) {
+                    yield new TopNTerminal(parseInt(tokens[i + 1], input));
+                }
+                throw bad(input);
+            }
+            case "BOTTOM" -> {
+                if (i + 3 < tokens.length
+                        && tokens[i + 2].equalsIgnoreCase("BY")
+                        && tokens[i + 3].equalsIgnoreCase("retainedSize")) {
+                    yield new BottomNTerminal(parseInt(tokens[i + 1], input));
+                }
+                throw bad(input);
+            }
+            case "AGGREGATE" -> {
+                if (i + 1 >= tokens.length) throw bad(input);
+                String func = tokens[i + 1].toUpperCase();
+                if (func.equals("COUNT")) yield new AggregateCountTerminal();
+                if ((func.equals("MAX") || func.equals("SUM")) && i + 2 < tokens.length
+                        && tokens[i + 2].equalsIgnoreCase("retainedSize")) {
+                    yield new AggregateRetainedSizeTerminal(func);
+                }
+                throw bad(input);
+            }
+            default -> throw bad(input);
+        };
     }
 
     private static Query parseRetainedBy(String[] tokens) {

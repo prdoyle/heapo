@@ -17,10 +17,14 @@ import java.util.*;
 final class DslCompleter implements Completer {
 
     private static final List<String> TOP_LEVEL = List.of(
-        "ALL", "CLASSES", "EXPLAIN", "RETAINED", "STATUS",
+        "ALL", "FROM", "CLASSES", "EXPLAIN", "RETAINED", "STATUS",
         "NAMES", "UNDO", "HISTORY", "CALL", "FORGET",
         "SELECT", "WITH", "exit", "quit"
     );
+
+    private static final List<String> PIPELINE_FILTERS = List.of("IN", "NOT");
+    private static final List<String> PIPELINE_TERMINALS =
+        List.of("TOP", "BOTTOM", "AGGREGATE");
 
     private final UnpackedHeap  heap;
     private final NamesManager  names;
@@ -44,7 +48,8 @@ final class DslCompleter implements Completer {
 
         String w0 = words.get(0).toUpperCase();
         switch (w0) {
-            case "ALL" -> completeAll(words, wordIndex, partial, candidates);
+            case "ALL"  -> completeAll(words, wordIndex, partial, candidates);
+            case "FROM" -> completeFrom(words, wordIndex, partial, candidates);
             case "CLASSES" -> {
                 if (wordIndex == 1) suggest(candidates, partial, List.of("MATCHING"));
             }
@@ -71,7 +76,7 @@ final class DslCompleter implements Completer {
                 suggest(candidates, partial, List.of("*"));
             }
             case 2 -> suggest(candidates, partial,
-                List.of("TOP", "BOTTOM", "RETAINING", "AGGREGATE"));
+                List.of("TOP", "BOTTOM", "RETAINING", "AGGREGATE", "IN", "NOT"));
             case 3 -> {
                 String w2 = words.get(2).toUpperCase();
                 if (w2.equals("AGGREGATE"))
@@ -89,6 +94,49 @@ final class DslCompleter implements Completer {
                 if ((w2.equals("TOP") || w2.equals("BOTTOM"))
                         && words.get(4).equalsIgnoreCase("BY"))
                     suggest(candidates, partial, List.of("retainedSize"));
+            }
+        }
+    }
+
+    private void completeFrom(List<String> words, int idx, String partial, List<Candidate> candidates) {
+        if (idx == 1) {
+            // Source: THAT or a user-defined name
+            var opts = new ArrayList<>(List.of("THAT"));
+            opts.addAll(names.all().keySet());
+            suggest(candidates, partial, opts);
+            return;
+        }
+        // After source: filters or terminal
+        completePipelineSuffix(words, idx, partial, candidates);
+    }
+
+    private void completePipelineSuffix(List<String> words, int idx, String partial,
+                                         List<Candidate> candidates) {
+        // Scan backwards to find what the current position expects
+        int i = 1; // skip FROM/ALL keyword (and class name for ALL)
+        String w0 = words.get(0).toUpperCase();
+        if (w0.equals("ALL")) i = 2; // skip class name
+
+        while (i < idx) {
+            String w = words.get(i).toUpperCase();
+            if (w.equals("IN")) { i += 2; continue; }
+            if (w.equals("NOT") && i + 1 < words.size() && words.get(i + 1).equalsIgnoreCase("IN")) {
+                i += 3; continue;
+            }
+            // Must be a terminal keyword — don't suggest more
+            return;
+        }
+        if (i == idx) {
+            // At filter/terminal position: offer both
+            var opts = new ArrayList<>(PIPELINE_FILTERS);
+            opts.addAll(PIPELINE_TERMINALS);
+            suggest(candidates, partial, opts);
+        } else if (i == idx - 1) {
+            // The previous word was "IN" or "NOT" — suggest name or "IN"
+            String prev = words.get(i - 1).toUpperCase();
+            if (prev.equals("IN") || prev.equals("NOT")) {
+                if (prev.equals("NOT")) suggest(candidates, partial, List.of("IN"));
+                else suggest(candidates, partial, new ArrayList<>(names.all().keySet()));
             }
         }
     }

@@ -209,7 +209,7 @@ public final class HeapSession implements AutoCloseable {
         }
     }
 
-    private String handleQuery(String cmd) throws IOException {
+    private String handleQuery(String cmd) throws IOException, SQLException {
         DslParser.Query parsed;
         try {
             parsed = DslParser.parse(cmd);
@@ -220,6 +220,7 @@ public final class HeapSession implements AutoCloseable {
         int histId = history.record(cmd, System.currentTimeMillis());
 
         return switch (parsed) {
+            case DslParser.Pipeline p -> executePipeline(p, histId);
             case DslParser.AllSource q -> {
                 long[] bits = QueryEngine.buildBitSet(heap, registry, q.className());
                 that = new BitSetAnswer(bits, heap.objectCount());
@@ -284,6 +285,89 @@ public final class HeapSession implements AutoCloseable {
                 yield "{\"objectCount\":" + heap.objectCount()
                     + ",\"classCount\":" + heap.classCount()
                     + "}\n";
+            }
+        };
+    }
+
+    // ── Pipeline execution helpers ────────────────────────────────────────────
+
+    private long[] resolveSource(DslParser.Source source) throws IOException, SQLException {
+        return switch (source) {
+            case DslParser.ClassSource cs -> QueryEngine.buildBitSet(heap, registry, cs.className());
+            case DslParser.NameSource ns  -> resolveBitSetByName(ns.name());
+            case DslParser.ThatSource ignored -> {
+                if (!(that instanceof BitSetAnswer bsa))
+                    throw new IllegalArgumentException(
+                        "THAT is not a bitset — run ALL <class> or FROM <name> first");
+                yield bsa.bits().clone();
+            }
+        };
+    }
+
+    private long[] resolveBitSetByName(String name) throws IOException, SQLException {
+        int histId = names.resolve(name)
+            .orElseThrow(() -> new IllegalArgumentException("Unknown name: '" + name + "'"));
+        var entry = history.findById(histId)
+            .orElseThrow(() -> new IllegalStateException("History @" + histId + " not found"));
+        if (entry.bitsetFile() != null) return loadBitSetFromFile(entry.bitsetFile());
+        throw new IllegalArgumentException(
+            "'" + name + "' is a table result, not a bitset — use SQL SELECT to query it");
+    }
+
+    private long[] applyFilter(long[] bits, DslParser.Filter filter)
+            throws IOException, SQLException {
+        return switch (filter) {
+            case DslParser.InFilter f -> {
+                long[] other = resolveBitSetByName(f.name());
+                long[] result = new long[bits.length];
+                int len = Math.min(bits.length, other.length);
+                for (int i = 0; i < len; i++) result[i] = bits[i] & other[i];
+                yield result;
+            }
+            case DslParser.NotInFilter f -> {
+                long[] other = resolveBitSetByName(f.name());
+                long[] result = bits.clone();
+                int len = Math.min(bits.length, other.length);
+                for (int i = 0; i < len; i++) result[i] &= ~other[i];
+                yield result;
+            }
+        };
+    }
+
+    private String executePipeline(DslParser.Pipeline p, int histId)
+            throws IOException, SQLException {
+        long[] bits = resolveSource(p.source());
+        for (var filter : p.filters()) bits = applyFilter(bits, filter);
+
+        if (p.terminal() == null) {
+            that = new BitSetAnswer(bits, heap.objectCount());
+            thatHistId = histId;
+            return displayBitSet(bits);
+        }
+        return switch (p.terminal()) {
+            case DslParser.TopNTerminal t -> {
+                var rows     = QueryEngine.topNFromBitSet(heap, registry, bits, t.n());
+                String table = tables.writeTopNResult(rows);
+                history.setSqlTable(histId, table);
+                that = new TableAnswer(table, rows.size());
+                thatHistId = histId;
+                yield JsonlFormatter.formatTopN(rows);
+            }
+            case DslParser.BottomNTerminal t -> {
+                var rows     = QueryEngine.bottomNFromBitSet(heap, registry, bits, t.n());
+                String table = tables.writeTopNResult(rows);
+                history.setSqlTable(histId, table);
+                that = new TableAnswer(table, rows.size());
+                thatHistId = histId;
+                yield JsonlFormatter.formatTopN(rows);
+            }
+            case DslParser.AggregateCountTerminal ignored -> {
+                long count = QueryEngine.bitSetCardinality(bits);
+                yield "{\"count\":" + count + "}\n";
+            }
+            case DslParser.AggregateRetainedSizeTerminal t -> {
+                long value = QueryEngine.aggregateFromBitSet(heap, registry, bits, t.func());
+                yield JsonlFormatter.formatAggregateRetainedSize("(pipeline)", t.func(), value);
             }
         };
     }

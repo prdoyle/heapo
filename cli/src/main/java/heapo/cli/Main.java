@@ -46,24 +46,40 @@ public final class Main implements Runnable {
     // ── Shared helpers ────────────────────────────────────────────────────────
 
     static final String REPL_HELP = """
-        DSL queries:
+        DSL sources (produce a bitset):
+          ALL <class>                             all instances of a class (implicit top 10 display)
+          FROM <name>                             named bitset result
+          FROM THAT                               current result
+          Use * as class name for all objects.
+
+        Bitset filters (chain after a source):
+          IN <name>                               bitset AND — keep objects in both sets
+          NOT IN <name>                           bitset AND-NOT — exclude objects in set
+
+        Output terminals (materialise the bitset):
+          TOP <n> BY retainedSize                 largest-N objects
+          BOTTOM <n> BY retainedSize              smallest-N objects
+          AGGREGATE COUNT                         total count
+          AGGREGATE MAX retainedSize              max retained size
+          AGGREGATE SUM retainedSize              total retained size
+
+        Combined shorthand (source + terminal in one line):
+          ALL <class> TOP <n> BY retainedSize
+          ALL <class> BOTTOM <n> BY retainedSize
+          ALL <class> RETAINING > <bytes>         filter by retained size (>, >=, <, <=, =)
+          ALL <class> AGGREGATE COUNT|MAX|SUM retainedSize
+          TOP <n> BY retainedSize                 across all classes
+          BOTTOM <n> BY retainedSize              across all classes
+
+        Other queries:
           STATUS                                  object and class counts
           CLASSES [MATCHING <glob>]               all classes sorted by instance count
-          TOP <n> BY retainedSize                 largest-N objects across all classes
-          BOTTOM <n> BY retainedSize              smallest-N objects across all classes
-          ALL <class> TOP <n> BY retainedSize     largest-N instances of a class
-          ALL <class> BOTTOM <n> BY retainedSize  smallest-N instances of a class
-          ALL <class> RETAINING > <bytes>         filter by retained size (>, >=, <, <=, =)
-          ALL <class> AGGREGATE COUNT             total instance count
-          ALL <class> AGGREGATE MAX retainedSize  max retained size
-          ALL <class> AGGREGATE SUM retainedSize  total retained size
           EXPLAIN #<id>                           dominator chain to GC root
-          RETAINED BY #<id> [TOP <n> BY retainedSize]   all objects retained by #<id>
-          Use * as class name to query all objects.
+          RETAINED BY #<id> [TOP <n> BY retainedSize]   objects retained by #<id>
 
         Session commands:
           NAMES                  show all named results
-          CALL THAT <name>       name the last result
+          CALL THAT <name>       name the last result (persists a bitset to disk)
           CALL @<id> <name>      name a specific history entry
           FORGET <name>          remove a name
           UNDO                   reverse the last CALL or FORGET
@@ -189,6 +205,31 @@ public final class Main implements Runnable {
             }
 
             String jsonl = switch (parsed) {
+                case DslParser.Pipeline p -> {
+                    if (p.source() instanceof DslParser.NameSource
+                            || p.source() instanceof DslParser.ThatSource
+                            || !p.filters().isEmpty()) {
+                        System.err.println(
+                            "Error: name/THAT resolution requires a session — use 'heapo open'");
+                        yield null;
+                    }
+                    var cs   = (DslParser.ClassSource) p.source();
+                    long[] b = QueryEngine.buildBitSet(heap, reg, cs.className());
+                    yield switch (p.terminal()) {
+                        case null                                       ->
+                            JsonlFormatter.formatTopN(QueryEngine.topNFromBitSet(heap, reg, b, 10));
+                        case DslParser.TopNTerminal t                   ->
+                            JsonlFormatter.formatTopN(QueryEngine.topNFromBitSet(heap, reg, b, t.n()));
+                        case DslParser.BottomNTerminal t                ->
+                            JsonlFormatter.formatTopN(QueryEngine.bottomNFromBitSet(heap, reg, b, t.n()));
+                        case DslParser.AggregateCountTerminal ignored   ->
+                            "{\"count\":" + QueryEngine.bitSetCardinality(b) + "}\n";
+                        case DslParser.AggregateRetainedSizeTerminal t  ->
+                            JsonlFormatter.formatAggregateRetainedSize(
+                                "(pipeline)", t.func(),
+                                QueryEngine.aggregateFromBitSet(heap, reg, b, t.func()));
+                    };
+                }
                 case DslParser.AllSource q -> {
                     long[] bits = QueryEngine.buildBitSet(heap, reg, q.className());
                     yield JsonlFormatter.formatTopN(QueryEngine.topNFromBitSet(heap, reg, bits, 10));
@@ -213,6 +254,8 @@ public final class Main implements Runnable {
                 case DslParser.StatusQuery ignored ->
                     "{\"objectCount\":" + heap.objectCount() + ",\"classCount\":" + heap.classCount() + "}\n";
             };
+
+            if (jsonl == null) return 1; // error already printed
 
             OutputFormatter.Format fmt;
             try {

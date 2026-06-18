@@ -67,22 +67,58 @@ heapo query DUMP --output jsonl ALL java.lang.String RETAINING > 100000
 
 ## Full DSL reference
 
+### Pipeline model
+
+Queries compose as: **source** → zero or more **filters** → optional **terminal**.
+
+**Sources** (produce a bitset of objects):
+
+| Source | Description |
+|---|---|
+| `ALL <class>` | All instances of a class (use `*` for all objects) |
+| `FROM <name>` | Named bitset result |
+| `FROM THAT` | Current result |
+
+**Filters** (narrow the bitset, O(v/64) bitset operations):
+
+| Filter | Description |
+|---|---|
+| `IN <name>` | Bitset AND — keep objects present in the named set |
+| `NOT IN <name>` | Bitset AND-NOT — exclude objects present in the named set |
+
+**Terminals** (materialise results):
+
+| Terminal | Returns |
+|---|---|
+| `TOP <n> BY retainedSize` | Largest-N by retained size |
+| `BOTTOM <n> BY retainedSize` | Smallest-N by retained size |
+| `AGGREGATE COUNT` | Total count |
+| `AGGREGATE MAX retainedSize` | Maximum retained size |
+| `AGGREGATE SUM retainedSize` | Sum of retained sizes |
+
+With no terminal, the result is stored as a bitset (THAT) and the top 10 are displayed.
+
+**Examples:**
+
+```
+ALL com.example.Foo                          # all Foo instances (bitset)
+ALL com.example.Foo TOP 10 BY retainedSize   # top 10 Foos
+ALL * IN suspects NOT IN excluded TOP 20 BY retainedSize
+FROM mySet AGGREGATE COUNT
+FROM THAT TOP 5 BY retainedSize
+```
+
+### Other queries
+
 | Query | Returns |
 |---|---|
 | `STATUS` | Object and class count |
 | `CLASSES [MATCHING <glob>]` | All classes sorted by instance count; glob matches dotted class name |
 | `TOP <n> BY retainedSize` | Largest-N objects across all classes |
 | `BOTTOM <n> BY retainedSize` | Smallest-N objects across all classes |
-| `ALL <class> TOP <n> BY retainedSize` | Largest-N instances of a specific class |
-| `ALL <class> BOTTOM <n> BY retainedSize` | Smallest-N instances of a specific class |
 | `ALL <class> RETAINING > <bytes>` | Instances satisfying the comparison (`>` `>=` `<` `<=` `=`) |
-| `ALL <class> AGGREGATE COUNT` | Total instance count |
-| `ALL <class> AGGREGATE MAX retainedSize` | Maximum retained size across all instances |
-| `ALL <class> AGGREGATE SUM retainedSize` | Sum of retained sizes across all instances |
 | `EXPLAIN #<id>` | Dominator chain from object to GC root |
 | `RETAINED BY #<id> [TOP <n> BY retainedSize]` | All objects in the dominator subtree |
-
-Use `*` as the class name to query across all objects regardless of type.
 
 ## Output formats
 
