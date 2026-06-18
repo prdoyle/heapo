@@ -35,6 +35,8 @@ public interface HprofHandler {
     // Heap objects
     void classDump(long classObjectId, long superClassId, int instanceSize,
                    long[] fieldNameIds, byte[] fieldTypes) throws IOException;
+    /** Called once per static reference-type field in a class dump with a non-null value. */
+    void staticObjectField(long classObjectId, long valueRawId) throws IOException;
     void instanceDump(long objectId, long classObjectId, byte[] instanceData) throws IOException;
     void objArrayDump(long objectId, long elementClassId, long[] elements) throws IOException;
     void primArrayDump(long objectId, int elementType, int numElements, byte[] data) throws IOException;

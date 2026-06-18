@@ -121,6 +121,7 @@ public final class Unpacker {
         public void classDump(long classObjectId, long superClassId, int instanceSize,
                               long[] fieldNameIds, byte[] fieldTypes) throws IOException {
             int denseId = nextId++;
+            currentClassDenseId = denseId;
             classCount++;
             superClasses.put(classObjectId, superClassId);
             classFields.put(classObjectId, fieldTypes);
@@ -130,6 +131,15 @@ public final class Unpacker {
             // Class objects are instances of java.lang.Class
             classOfRawOut.writeLong(javaLangClassRawId);
             shallowSizeOut.writeInt(0);  // class object shallow size not available in HPROF
+        }
+
+        // Set in classDump; used by the immediately-following staticObjectField callbacks
+        private int currentClassDenseId = -1;
+
+        @Override
+        public void staticObjectField(long classObjectId, long valueRawId) throws IOException {
+            // classDump fired first (HprofReader guarantees this), so dense ID is assigned
+            if (currentClassDenseId >= 0) emitEdge(currentClassDenseId, valueRawId);
         }
 
         @Override
@@ -399,7 +409,7 @@ public final class Unpacker {
     // ── Utilities ────────────────────────────────────────────────────────────
 
     /** Binary search for rawId in sorted lookup; returns dense ID or -1 if not found. */
-    static int resolveDenseId(long rawId, long[] sortedRawIds, int[] denseIds) {
+    public static int resolveDenseId(long rawId, long[] sortedRawIds, int[] denseIds) {
         if (rawId == 0) return -1;
         int idx = Arrays.binarySearch(sortedRawIds, rawId);
         return idx >= 0 ? denseIds[idx] : -1;

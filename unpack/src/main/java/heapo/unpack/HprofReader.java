@@ -212,12 +212,22 @@ public final class HprofReader {
             in.skipNBytes(typeSize(type, idSize));
         }
 
-        // static fields (skip values, record for name resolution later if needed)
+        // static fields — buffer object refs; fired after classDump so handler has the dense ID
         int staticCount = in.readUnsignedShort();
+        long[] staticObjectRefs = null;
+        int staticObjectCount = 0;
         for (int i = 0; i < staticCount; i++) {
             readId(in, idSize); // name string id
             int type = in.readUnsignedByte();
-            in.skipNBytes(typeSize(type, idSize));
+            if (type == TYPE_OBJECT) {
+                long ref = readId(in, idSize);
+                if (ref != 0) {
+                    if (staticObjectRefs == null) staticObjectRefs = new long[staticCount];
+                    staticObjectRefs[staticObjectCount++] = ref;
+                }
+            } else {
+                in.skipNBytes(typeSize(type, idSize));
+            }
         }
 
         // instance field descriptors
@@ -230,6 +240,12 @@ public final class HprofReader {
         }
 
         h.classDump(classObjectId, superClassId, instanceSize, fieldNameIds, fieldTypes);
+        // Fire static object refs after classDump so handlers have the dense ID available
+        if (staticObjectRefs != null) {
+            for (int i = 0; i < staticObjectCount; i++) {
+                h.staticObjectField(classObjectId, staticObjectRefs[i]);
+            }
+        }
     }
 
     private void readInstanceDump(CountingInputStream in, HprofHandler h) throws IOException {
