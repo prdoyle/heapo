@@ -87,7 +87,7 @@ public final class HeapSession implements AutoCloseable {
         var entries = history.recent(n);
         var sb = new StringBuilder();
         for (var e : entries) {
-            sb.append("{\"id\":").append(e.id())
+            sb.append("{\"id\":\"@").append(e.id()).append('"')
               .append(",\"command\":\"").append(escJson(e.command())).append('"')
               .append(",\"timestamp\":").append(e.timestamp())
               .append("}\n");
