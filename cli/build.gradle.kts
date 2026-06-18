@@ -1,5 +1,7 @@
 dependencies {
     implementation(project(":model"))
+    implementation(project(":unpack"))
+    implementation(project(":indexes"))
     implementation(project(":query-engine"))
     implementation(project(":session"))
     implementation("info.picocli:picocli:4.7.6")

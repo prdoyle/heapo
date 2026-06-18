@@ -58,6 +58,8 @@ public final class Unpacker {
         try { Files.delete(tempDir); } catch (IOException ignored) {}
 
         writeManifest(hprofFile, objectCount, classCount, outputDir.resolve("manifest.json"));
+        writeClassNames(handler.classNameIds, handler.strings, sortedRawIds, denseIds,
+                        outputDir.resolve("class-names.txt"));
         return new UnpackedHeap(outputDir, objectCount, classCount);
     }
 
@@ -404,6 +406,21 @@ public final class Unpacker {
         } catch (NoSuchAlgorithmException e) {
             throw new AssertionError("SHA-256 must be available", e);
         }
+    }
+
+    /** Writes class-names.txt: one line per class, format "<denseId>\t<hprofSlashedName>". */
+    private static void writeClassNames(Map<Long, Long> classNameIds, Map<Long, String> strings,
+                                        long[] sortedRawIds, int[] denseIds, Path outPath)
+            throws IOException {
+        List<String> lines = new ArrayList<>();
+        for (var entry : classNameIds.entrySet()) {
+            int denseId = resolveDenseId(entry.getKey(), sortedRawIds, denseIds);
+            if (denseId < 0) continue;
+            String name = strings.get(entry.getValue());
+            if (name == null) continue;
+            lines.add(denseId + "\t" + name);
+        }
+        Files.writeString(outPath, String.join("\n", lines) + "\n");
     }
 
     // ── Utilities ────────────────────────────────────────────────────────────
