@@ -11,6 +11,7 @@ import picocli.CommandLine;
 import picocli.CommandLine.*;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.sql.SQLException;
 import java.util.List;
@@ -24,7 +25,7 @@ import java.util.concurrent.Callable;
 )
 public final class Main implements Callable<Integer> {
 
-    @Parameters(index = "0", description = "Path to the HPROF file")
+    @Parameters(index = "0", description = "Path to the HPROF file", arity = "0..1")
     Path hprofFile;
 
     @Parameters(index = "1..*", arity = "0..*",
@@ -48,8 +49,25 @@ public final class Main implements Callable<Integer> {
             defaultValue = "jsonl")
     String outputFormat;
 
+    @Option(names = {"--skill"},
+            description = "Print the Claude Code skill file for this tool and exit")
+    boolean printSkill;
+
     @Override
     public Integer call() throws IOException, SQLException {
+        if (printSkill) {
+            try (var stream = Main.class.getResourceAsStream("/heapo/SKILL.md")) {
+                if (stream == null) throw new IllegalStateException("SKILL.md resource not bundled");
+                System.out.print(new String(stream.readAllBytes(), StandardCharsets.UTF_8));
+            }
+            return 0;
+        }
+
+        if (hprofFile == null) {
+            System.err.println("Error: missing required parameter: <hprofFile>");
+            return 1;
+        }
+
         Path outDir = heapDir != null ? heapDir
                     : hprofFile.resolveSibling(hprofFile.getFileName() + ".d");
         Files.createDirectories(outDir);
