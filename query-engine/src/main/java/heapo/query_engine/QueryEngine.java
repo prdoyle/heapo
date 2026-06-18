@@ -373,6 +373,39 @@ public final class QueryEngine {
         return bits;
     }
 
+    /**
+     * Expands {@code retainerBits} to include every object in the dominator subtree of
+     * any object set in {@code retainerBits}.  Equivalent to the union of
+     * {@link #dominatorSubtree} results for each individual retainer object.
+     */
+    public static long[] buildRetainedByBitSet(UnpackedHeap heap, IndexRegistry registry,
+                                                long[] retainerBits) throws IOException {
+        int objectCount = heap.objectCount();
+        long[] result = new long[(objectCount + 63) >>> 6];
+
+        var queue = new ArrayDeque<Integer>();
+        for (int v = 0; v < objectCount; v++) {
+            if ((retainerBits[v >>> 6] >>> (v & 63) & 1L) != 0L) {
+                result[v >>> 6] |= 1L << (v & 63);
+                queue.add(v);
+            }
+        }
+
+        try (var domChildren = registry.openDominatorChildren()) {
+            while (!queue.isEmpty()) {
+                int cur = queue.poll();
+                for (long e = domChildren.start(cur), end = domChildren.end(cur); e < end; e++) {
+                    int child = domChildren.edge(e);
+                    if ((result[child >>> 6] >>> (child & 63) & 1L) == 0L) {
+                        result[child >>> 6] |= 1L << (child & 63);
+                        queue.add(child);
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
     /** Returns the number of set bits in {@code bits}. */
     public static int bitSetCardinality(long[] bits) {
         int count = 0;

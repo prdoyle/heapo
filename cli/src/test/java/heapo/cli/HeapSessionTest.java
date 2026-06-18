@@ -361,6 +361,51 @@ class HeapSessionTest {
         }
     }
 
+    // ── Phase: RETAINED BY <name> pipeline filter ─────────────────────────────
+
+    @Test
+    void retainedByFilterKeepsOnlyDominatedObjects() throws Exception {
+        Path p = tempRoot.resolve("retained-by-filter.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            // Build a named bitset of top-retained Bar instances
+            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CALL THAT bars");
+
+            // Total heap count
+            String allCountJson = session.execute("ALL * AGGREGATE COUNT");
+            long allCount = Long.parseLong(allCountJson.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
+
+            // Objects retained by bars — must be ≤ total heap size
+            String retainedCountJson = session.execute("ALL * RETAINED BY bars AGGREGATE COUNT");
+            assertFalse(retainedCountJson.contains("\"error\""),
+                "RETAINED BY filter should succeed: " + retainedCountJson);
+            assertTrue(retainedCountJson.contains("\"count\""), "Should have count field");
+
+            long retainedCount = Long.parseLong(
+                retainedCountJson.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
+
+            // The retained set includes bars themselves plus their descendants
+            assertTrue(retainedCount >= 1, "At least one object should be retained");
+            assertTrue(retainedCount <= allCount, "Retained set cannot exceed full heap");
+        }
+    }
+
+    @Test
+    void retainedByFilterIncludesRetainersThemselves() throws Exception {
+        Path p = tempRoot.resolve("retained-by-self.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            // Build a bitset of all bars (no terminal = BitSetAnswer)
+            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CALL THAT bars2");
+
+            // Bars are retained by themselves, so must appear in the result
+            String result = session.execute("ALL * RETAINED BY bars2 TOP 20 BY retainedSize");
+            assertFalse(result.contains("\"error\""), "RETAINED BY should succeed: " + result);
+            assertTrue(result.contains("KnownObjects$Bar"),
+                "Bar instances must appear in their own retained set");
+        }
+    }
+
     // ── REPL output formatting ────────────────────────────────────────────────
 
     @Test

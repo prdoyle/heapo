@@ -85,6 +85,7 @@ Queries compose as: **source** → zero or more **filters** → optional **termi
 |---|---|
 | `IN <name>` | Bitset AND — keep objects present in the named set |
 | `NOT IN <name>` | Bitset AND-NOT — exclude objects present in the named set |
+| `RETAINED BY <name>` | Keep objects dominated (exclusively retained) by any object in the named set |
 
 **Terminals** (materialise results):
 

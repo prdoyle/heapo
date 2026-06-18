@@ -30,9 +30,11 @@ public final class DslParser {
     public record NameSource(String name)       implements Source {}
     public record ThatSource()                  implements Source {}
 
-    public sealed interface Filter permits InFilter, NotInFilter {}
-    public record InFilter(String name)    implements Filter {}
-    public record NotInFilter(String name) implements Filter {}
+    public sealed interface Filter permits InFilter, NotInFilter, RetainedByFilter {}
+    public record InFilter(String name)       implements Filter {}
+    public record NotInFilter(String name)    implements Filter {}
+    /** Keep only objects in the dominator subtree of any object in the named bitset. */
+    public record RetainedByFilter(String name) implements Filter {}
 
     public sealed interface Terminal permits TopNTerminal, BottomNTerminal,
                                               AggregateCountTerminal, AggregateRetainedSizeTerminal {}
@@ -107,7 +109,10 @@ public final class DslParser {
         // Detect pipeline filter keywords — route to Pipeline
         if (tokens[2].equalsIgnoreCase("IN")
                 || (tokens[2].equalsIgnoreCase("NOT") && tokens.length > 3
-                    && tokens[3].equalsIgnoreCase("IN"))) {
+                    && tokens[3].equalsIgnoreCase("IN"))
+                || (tokens[2].equalsIgnoreCase("RETAINED") && tokens.length > 4
+                    && tokens[3].equalsIgnoreCase("BY")
+                    && !tokens[4].startsWith("#"))) {
             return parsePipeline(new ClassSource(className), tokens, 2, input);
         }
 
@@ -176,6 +181,12 @@ public final class DslParser {
                     && idx + 2 < tokens.length
                     && tokens[idx + 1].equalsIgnoreCase("IN")) {
                 filters.add(new NotInFilter(tokens[idx + 2]));
+                idx += 3;
+            } else if (tokens[idx].equalsIgnoreCase("RETAINED")
+                    && idx + 2 < tokens.length
+                    && tokens[idx + 1].equalsIgnoreCase("BY")
+                    && !tokens[idx + 2].startsWith("#")) {
+                filters.add(new RetainedByFilter(tokens[idx + 2]));
                 idx += 3;
             } else {
                 break;

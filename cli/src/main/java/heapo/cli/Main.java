@@ -55,6 +55,7 @@ public final class Main implements Runnable {
         Bitset filters (chain after a source):
           IN <name>                               bitset AND — keep objects in both sets
           NOT IN <name>                           bitset AND-NOT — exclude objects in set
+          RETAINED BY <name>                      keep objects dominated by any object in set
 
         Output terminals (materialise the bitset):
           TOP <n> BY retainedSize                 largest-N objects
@@ -206,9 +207,13 @@ public final class Main implements Runnable {
 
             String jsonl = switch (parsed) {
                 case DslParser.Pipeline p -> {
+                    boolean hasSessionFilter = p.filters().stream().anyMatch(
+                        f -> f instanceof DslParser.InFilter
+                          || f instanceof DslParser.NotInFilter
+                          || f instanceof DslParser.RetainedByFilter);
                     if (p.source() instanceof DslParser.NameSource
                             || p.source() instanceof DslParser.ThatSource
-                            || !p.filters().isEmpty()) {
+                            || hasSessionFilter) {
                         System.err.println(
                             "Error: name/THAT resolution requires a session — use 'heapo open'");
                         yield null;

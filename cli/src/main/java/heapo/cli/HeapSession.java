@@ -331,6 +331,14 @@ public final class HeapSession implements AutoCloseable {
                 for (int i = 0; i < len; i++) result[i] &= ~other[i];
                 yield result;
             }
+            case DslParser.RetainedByFilter f -> {
+                long[] retainerBits = resolveBitSetByName(f.name());
+                long[] retained = QueryEngine.buildRetainedByBitSet(heap, registry, retainerBits);
+                long[] result = new long[bits.length];
+                int len = Math.min(bits.length, retained.length);
+                for (int i = 0; i < len; i++) result[i] = bits[i] & retained[i];
+                yield result;
+            }
         };
     }
 

@@ -22,7 +22,7 @@ final class DslCompleter implements Completer {
         "SELECT", "WITH", "exit", "quit"
     );
 
-    private static final List<String> PIPELINE_FILTERS = List.of("IN", "NOT");
+    private static final List<String> PIPELINE_FILTERS = List.of("IN", "NOT", "RETAINED");
     private static final List<String> PIPELINE_TERMINALS =
         List.of("TOP", "BOTTOM", "AGGREGATE");
 
@@ -76,7 +76,7 @@ final class DslCompleter implements Completer {
                 suggest(candidates, partial, List.of("*"));
             }
             case 2 -> suggest(candidates, partial,
-                List.of("TOP", "BOTTOM", "RETAINING", "AGGREGATE", "IN", "NOT"));
+                List.of("TOP", "BOTTOM", "RETAINING", "AGGREGATE", "IN", "NOT", "RETAINED"));
             case 3 -> {
                 String w2 = words.get(2).toUpperCase();
                 if (w2.equals("AGGREGATE"))
@@ -112,16 +112,18 @@ final class DslCompleter implements Completer {
 
     private void completePipelineSuffix(List<String> words, int idx, String partial,
                                          List<Candidate> candidates) {
-        // Scan backwards to find what the current position expects
-        int i = 1; // skip FROM/ALL keyword (and class name for ALL)
-        String w0 = words.get(0).toUpperCase();
-        if (w0.equals("ALL")) i = 2; // skip class name
+        // Skip the source tokens: for ALL skip keyword + class name, for FROM skip keyword + source name
+        int i = 2; // both ALL and FROM have 2-token sources
 
         while (i < idx) {
             String w = words.get(i).toUpperCase();
             if (w.equals("IN")) { i += 2; continue; }
             if (w.equals("NOT") && i + 1 < words.size() && words.get(i + 1).equalsIgnoreCase("IN")) {
                 i += 3; continue;
+            }
+            if (w.equals("RETAINED") && i + 1 < words.size()
+                    && words.get(i + 1).equalsIgnoreCase("BY")) {
+                i += 3; continue; // RETAINED BY <name>
             }
             // Must be a terminal keyword — don't suggest more
             return;
@@ -132,11 +134,13 @@ final class DslCompleter implements Completer {
             opts.addAll(PIPELINE_TERMINALS);
             suggest(candidates, partial, opts);
         } else if (i == idx - 1) {
-            // The previous word was "IN" or "NOT" — suggest name or "IN"
+            // One token into an incomplete filter — figure out which
             String prev = words.get(i - 1).toUpperCase();
-            if (prev.equals("IN") || prev.equals("NOT")) {
-                if (prev.equals("NOT")) suggest(candidates, partial, List.of("IN"));
-                else suggest(candidates, partial, new ArrayList<>(names.all().keySet()));
+            switch (prev) {
+                case "IN"       -> suggest(candidates, partial, new ArrayList<>(names.all().keySet()));
+                case "NOT"      -> suggest(candidates, partial, List.of("IN"));
+                case "RETAINED" -> suggest(candidates, partial, List.of("BY"));
+                case "BY"       -> suggest(candidates, partial, new ArrayList<>(names.all().keySet()));
             }
         }
     }
