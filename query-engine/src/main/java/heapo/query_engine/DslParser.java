@@ -7,16 +7,18 @@ import java.util.Set;
 /**
  * DSL parser. Supported queries:
  * <ul>
- *   <li>{@code ALL <class>} — bitset of all instances (pipeline source)
- *   <li>{@code ALL <class> TOP <n> BY retainedSize}
- *   <li>{@code ALL <class> BOTTOM <n> BY retainedSize}
- *   <li>{@code ALL <class> RETAINING > <bytes>}
- *   <li>{@code ALL <class> AGGREGATE COUNT/MAX/SUM retainedSize}
+ *   <li>{@code CLASS <class>} — bitset of all instances (pipeline source)
+ *   <li>{@code CLASS <class> TOP <n> [BY retainedSize]}
+ *   <li>{@code CLASS <class> BOTTOM <n> [BY retainedSize]}
+ *   <li>{@code CLASS <class> RETAINING > <bytes>}
+ *   <li>{@code CLASS <class> COUNT}
+ *   <li>{@code CLASS <class> SUM retainedSize}
+ *   <li>{@code CLASS <class> MAX retainedSize}
  *   <li>{@code FROM <name> | FROM THAT} — named/current bitset as source
- *   <li>{@code <source> [IN <name>]* [NOT IN <name>]* [<terminal>]} — composable pipeline
+ *   <li>{@code <source> [filter]* [terminal]} — composable pipeline
  *   <li>{@code CLASSES [MATCHING <glob>]}
- *   <li>{@code EXPLAIN #<denseId>}
- *   <li>{@code RETAINED BY #<id> [TOP n BY retainedSize]}
+ *   <li>{@code EXPLAIN &<denseId>}
+ *   <li>{@code RETAINED BY &<id> [TOP n [BY retainedSize]]}
  *   <li>{@code STATUS}
  * </ul>
  * {@code <class>} is a fully-qualified dotted class name or {@code *} for all objects.
@@ -95,9 +97,9 @@ public final class DslParser {
         if (tokens.length == 0) throw new IllegalArgumentException("Empty query");
 
         return switch (tokens[0].toUpperCase()) {
-            case "ALL"      -> parseAll(tokens, input);
-            case "TOP"      -> parseAll(withAllAndClass("*", tokens), input);
-            case "BOTTOM"   -> parseAll(withAllAndClass("*", tokens), input);
+            case "CLASS"    -> parseClass(tokens, input);
+            case "TOP"      -> parseClass(withClassAndStar(tokens), input);
+            case "BOTTOM"   -> parseClass(withClassAndStar(tokens), input);
             case "FROM"     -> parseFrom(tokens, input);
             case "CLASSES"  -> parseClasses(tokens);
             case "EXPLAIN"  -> parseExplain(tokens);
@@ -107,11 +109,11 @@ public final class DslParser {
         };
     }
 
-    private static Query parseAll(String[] tokens, String input) {
+    private static Query parseClass(String[] tokens, String input) {
         if (tokens.length < 2) throw bad(input);
         String className = tokens[1];
 
-        // ALL <class> alone — a bitset source with no output terminal
+        // CLASS <class> alone — a bitset source with no output terminal
         if (tokens.length == 2) return new AllSource(className);
 
         // Detect pipeline filter keywords — route to Pipeline
@@ -120,7 +122,7 @@ public final class DslParser {
                     && tokens[3].equalsIgnoreCase("IN"))
                 || (tokens[2].equalsIgnoreCase("RETAINED") && tokens.length > 4
                     && tokens[3].equalsIgnoreCase("BY")
-                    && !tokens[4].startsWith("#"))
+                    && !tokens[4].matches("i\\d+"))
                 || (tokens[2].equalsIgnoreCase("OF") && tokens.length > 4
                     && tokens[3].equalsIgnoreCase("TYPE"))
                 || (tokens[2].equalsIgnoreCase("SIZED") && tokens.length > 4
@@ -135,7 +137,7 @@ public final class DslParser {
             return parsePipeline(new ClassSource(className), tokens, 2, input);
         }
 
-        // ALL <class> TOP n [BY retainedSize]
+        // CLASS <class> TOP n [BY retainedSize]
         if (tokens.length >= 4 && tokens[2].equalsIgnoreCase("TOP")) {
             boolean byOk = tokens.length == 4
                 || (tokens.length >= 6 && tokens[4].equalsIgnoreCase("BY")
@@ -143,7 +145,7 @@ public final class DslParser {
             if (byOk) return new AllTopByRetainedSize(className, parseInt(tokens[3], input));
         }
 
-        // ALL <class> BOTTOM n [BY retainedSize]
+        // CLASS <class> BOTTOM n [BY retainedSize]
         if (tokens.length >= 4 && tokens[2].equalsIgnoreCase("BOTTOM")) {
             boolean byOk = tokens.length == 4
                 || (tokens.length >= 6 && tokens[4].equalsIgnoreCase("BY")
@@ -151,7 +153,7 @@ public final class DslParser {
             if (byOk) return new AllBottomByRetainedSize(className, parseInt(tokens[3], input));
         }
 
-        // ALL <class> RETAINING op n
+        // CLASS <class> RETAINING op n
         if (tokens.length >= 5
                 && tokens[2].equalsIgnoreCase("RETAINING")) {
             String op  = tokens[3];
@@ -161,20 +163,17 @@ public final class DslParser {
             return new AllRetaining(className, op, size);
         }
 
-        // ALL <class> AGGREGATE COUNT
-        if (tokens.length >= 4
-                && tokens[2].equalsIgnoreCase("AGGREGATE")
-                && tokens[3].equalsIgnoreCase("COUNT")) {
+        // CLASS <class> COUNT
+        if (tokens.length == 3 && tokens[2].equalsIgnoreCase("COUNT")) {
             return new AggregateCount(className);
         }
 
-        // ALL <class> AGGREGATE MAX retainedSize
-        // ALL <class> AGGREGATE SUM retainedSize
-        if (tokens.length >= 5
-                && tokens[2].equalsIgnoreCase("AGGREGATE")
-                && (tokens[3].equalsIgnoreCase("MAX") || tokens[3].equalsIgnoreCase("SUM"))
-                && tokens[4].equalsIgnoreCase("retainedSize")) {
-            return new AggregateRetainedSize(className, tokens[3].toUpperCase());
+        // CLASS <class> SUM retainedSize
+        // CLASS <class> MAX retainedSize
+        if (tokens.length == 4
+                && (tokens[2].equalsIgnoreCase("SUM") || tokens[2].equalsIgnoreCase("MAX"))
+                && tokens[3].equalsIgnoreCase("retainedSize")) {
+            return new AggregateRetainedSize(className, tokens[2].toUpperCase());
         }
 
         throw bad(input);
@@ -275,26 +274,27 @@ public final class DslParser {
                 if (byOk) yield new BottomNTerminal(parseInt(tokens[i + 1], input));
                 throw bad(input);
             }
-            case "AGGREGATE" -> {
-                if (i + 1 >= tokens.length) throw bad(input);
-                String func = tokens[i + 1].toUpperCase();
-                if (func.equals("COUNT")) yield new AggregateCountTerminal();
-                if ((func.equals("MAX") || func.equals("SUM")) && i + 2 < tokens.length
-                        && tokens[i + 2].equalsIgnoreCase("retainedSize")) {
-                    yield new AggregateRetainedSizeTerminal(func);
-                }
-                throw bad(input);
+            case "COUNT" -> new AggregateCountTerminal();
+            case "SUM" -> {
+                if (i + 1 >= tokens.length || !tokens[i + 1].equalsIgnoreCase("retainedSize"))
+                    throw bad(input);
+                yield new AggregateRetainedSizeTerminal("SUM");
+            }
+            case "MAX" -> {
+                if (i + 1 >= tokens.length || !tokens[i + 1].equalsIgnoreCase("retainedSize"))
+                    throw bad(input);
+                yield new AggregateRetainedSizeTerminal("MAX");
             }
             default -> throw bad(input);
         };
     }
 
     private static Query parseRetainedBy(String[] tokens) {
-        // RETAINED BY #id [TOP n BY retainedSize]
+        // RETAINED BY iN [TOP n [BY retainedSize]]
         if (tokens.length < 3
                 || !tokens[1].equalsIgnoreCase("BY")
-                || !tokens[2].startsWith("#")) {
-            throw new IllegalArgumentException("Usage: RETAINED BY #<id> [TOP n BY retainedSize]");
+                || !tokens[2].matches("i\\d+")) {
+            throw new IllegalArgumentException("Usage: RETAINED BY i<id> [TOP n [BY retainedSize]]");
         }
         int denseId = Integer.parseInt(tokens[2].substring(1));
         int topN = -1;
@@ -316,13 +316,13 @@ public final class DslParser {
     }
 
     private static Query parseExplain(String[] tokens) {
-        if (tokens.length < 2) throw new IllegalArgumentException("Usage: EXPLAIN #<id>");
+        if (tokens.length < 2) throw new IllegalArgumentException("Usage: EXPLAIN i<id>");
         String id = tokens[1];
-        if (!id.startsWith("#")) throw new IllegalArgumentException("Dense ID must start with #");
+        if (!id.matches("i\\d+")) throw new IllegalArgumentException("Object ID must be i<number> (e.g. i12345)");
         try {
             return new ExplainQuery(Integer.parseInt(id.substring(1)));
         } catch (NumberFormatException e) {
-            throw new IllegalArgumentException("Invalid dense ID: " + id);
+            throw new IllegalArgumentException("Invalid object ID: " + id);
         }
     }
 
@@ -344,11 +344,11 @@ public final class DslParser {
         }
     }
 
-    // Turns ["TOP", ...] into ["ALL", className, "TOP", ...] for reuse by parseAll
-    private static String[] withAllAndClass(String className, String[] tokens) {
+    // Turns ["TOP", ...] into ["CLASS", "*", "TOP", ...] for standalone TOP/BOTTOM
+    private static String[] withClassAndStar(String[] tokens) {
         String[] result = new String[tokens.length + 2];
-        result[0] = "ALL";
-        result[1] = className;
+        result[0] = "CLASS";
+        result[1] = "*";
         System.arraycopy(tokens, 0, result, 2, tokens.length);
         return result;
     }

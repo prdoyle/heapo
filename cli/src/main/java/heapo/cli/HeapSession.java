@@ -57,7 +57,7 @@ public final class HeapSession implements AutoCloseable {
 
         // ── Session commands ──────────────────────────────────────────────────
         if (trimmed.matches("(?i)NAMES(\\s+MATCHING\\s+\\S+)?")) return handleNames(trimmed);
-        if (trimmed.matches("(?i)EXPLAIN\\s+\\S+") && !trimmed.split("\\s+")[1].startsWith("#"))
+        if (trimmed.matches("(?i)EXPLAIN\\s+\\S+") && !trimmed.split("\\s+")[1].matches("i\\d+"))
             return handleExplainName(trimmed.split("\\s+")[1]);
         if (trimmed.equalsIgnoreCase("THAT")) {
             if (that instanceof VoidAnswer)    return "{\"error\":\"THAT is empty\"}\n";
@@ -66,10 +66,10 @@ public final class HeapSession implements AutoCloseable {
             return "{\"error\":\"cannot display THAT\"}\n";
         }
         if (trimmed.equalsIgnoreCase("UNDO"))  return handleUndo();
-        if (trimmed.matches("@\\d+"))          return handleRecall(Integer.parseInt(trimmed.substring(1)));
+        if (trimmed.matches("h\\d+"))           return handleRecall(Integer.parseInt(trimmed.substring(1)));
         if (trimmed.matches("(?i)HISTORY(\\s+\\d+)?")) return handleHistory(trimmed);
         if (trimmed.matches("(?i)CALL\\s+THAT\\s+\\S+")) return handleCallThat(trimmed);
-        if (trimmed.matches("(?i)CALL\\s+@\\d+\\s+\\S+")) return handleCallById(trimmed);
+        if (trimmed.matches("(?i)CALL\\s+h\\d+\\s+\\S+")) return handleCallById(trimmed);
         if (trimmed.matches("(?i)FORGET\\s+\\S+")) return handleForget(trimmed);
 
         // ── SQL query ─────────────────────────────────────────────────────────
@@ -82,6 +82,16 @@ public final class HeapSession implements AutoCloseable {
     public Answer getThat()         { return that;  }
     public NamesManager names()     { return names; }
     public void clearSession()      { db.truncateSession(); }
+
+    /** Returns the typed result sigil for the prompt, e.g. {@code "t17"} or {@code "s42"}, or empty. */
+    public String thatSigil() {
+        if (thatHistId < 0) return "";
+        return switch (that) {
+            case BitSetAnswer ignored -> "s" + thatHistId;
+            case TableAnswer  ignored -> "t" + thatHistId;
+            default                  -> "";
+        };
+    }
 
     // ── Session command handlers ──────────────────────────────────────────────
 
@@ -113,7 +123,7 @@ public final class HeapSession implements AutoCloseable {
                     : "other";
         var sb = new StringBuilder();
         sb.append("{\"name\":\"").append(escJson(name)).append('"')
-          .append(",\"histId\":\"@").append(histId).append('"')
+          .append(",\"histId\":\"h").append(histId).append('"')
           .append(",\"type\":\"").append(type).append('"')
           .append(",\"command\":\"").append(escJson(entry.command())).append('"');
         if (entry.input1() != null) sb.append(",\"derivedFrom\":\"@").append(entry.input1()).append('"');
@@ -133,11 +143,11 @@ public final class HeapSession implements AutoCloseable {
         var entries = history.recent(n);
         var sb = new StringBuilder();
         for (var e : entries) {
-            sb.append("{\"id\":\"@").append(e.id()).append('"')
+            sb.append("{\"id\":\"h").append(e.id()).append('"')
               .append(",\"command\":\"").append(escJson(e.command())).append('"')
               .append(",\"timestamp\":").append(e.timestamp());
-            if (e.input1() != null) sb.append(",\"input1\":\"@").append(e.input1()).append('"');
-            if (e.input2() != null) sb.append(",\"input2\":\"@").append(e.input2()).append('"');
+            if (e.input1() != null) sb.append(",\"input1\":\"h").append(e.input1()).append('"');
+            if (e.input2() != null) sb.append(",\"input2\":\"h").append(e.input2()).append('"');
             sb.append("}\n");
         }
         return sb.toString();
@@ -166,8 +176,8 @@ public final class HeapSession implements AutoCloseable {
     private String handleCallById(String cmd) throws SQLException {
         String[] parts = cmd.split("\\s+");
         String ref = parts[1];
-        if (!ref.startsWith("@"))
-            throw new IllegalArgumentException("History reference must start with @ (e.g. CALL @42 name)");
+        if (!ref.matches("h\\d+"))
+            throw new IllegalArgumentException("History reference must be h<n> (e.g. CALL h42 name)");
         int targetId = Integer.parseInt(ref.substring(1));
         String name    = parts[2];
         var displaced  = names.bind(name, targetId);
@@ -188,7 +198,7 @@ public final class HeapSession implements AutoCloseable {
 
     private String handleRecall(int histId) throws IOException, SQLException {
         var entry = history.findById(histId);
-        if (entry.isEmpty()) return "{\"error\":\"No history entry @" + histId + "\"}\n";
+        if (entry.isEmpty()) return "{\"error\":\"No history entry h" + histId + "\"}\n";
         if (entry.get().sqlTable() != null)   return sql.selectAsJsonl(entry.get().sqlTable());
         if (entry.get().bitsetFile() != null) return displayBitSet(loadBitSetFromFile(entry.get().bitsetFile()));
         return handleQuery(entry.get().command());
@@ -329,7 +339,7 @@ public final class HeapSession implements AutoCloseable {
             case DslParser.ThatSource ignored -> {
                 if (!(that instanceof BitSetAnswer bsa))
                     throw new IllegalArgumentException(
-                        "THAT is not a bitset — run ALL <class> or FROM <name> first");
+                        "THAT is not a bitset — run CLASS <class> or FROM <name> first");
                 yield bsa.bits().clone();
             }
         };

@@ -46,8 +46,11 @@ public final class Main implements Runnable {
     // ── Shared helpers ────────────────────────────────────────────────────────
 
     static final String REPL_HELP = """
+        Sigils: i<n> = heap object instance, t<n> = table result, s<n> = set (bitset), h<n> = history entry.
+        The prompt shows the current result type and ID, e.g. heapo s42> or heapo t17>.
+
         DSL sources (produce a bitset):
-          ALL <class>                             all instances of a class (implicit top 10 display)
+          CLASS <class>                           all instances of a class (implicit top 10 display)
           FROM <name>                             named bitset result
           FROM THAT                               current result
           Use * as class name for all objects.
@@ -71,35 +74,35 @@ public final class Main implements Runnable {
           REACHABLE FROM <name>                   keep objects transitively reachable from any object in set
           WHERE <field> <op> <value>              keep objects whose primitive field satisfies comparison (>, >=, <, <=, =)
 
-        Output terminals (materialise the bitset):
+        Output terminals (materialise the bitset into a table):
           TOP <n> [BY retainedSize]               largest-N objects
           BOTTOM <n> [BY retainedSize]            smallest-N objects
-          AGGREGATE COUNT                         total count
-          AGGREGATE MAX retainedSize              max retained size
-          AGGREGATE SUM retainedSize              total retained size
+          COUNT                                   total count
+          MAX retainedSize                        max retained size
+          SUM retainedSize                        total retained size
 
         Combined shorthand (source + terminal in one line):
-          ALL <class> TOP <n> [BY retainedSize]
-          ALL <class> BOTTOM <n> [BY retainedSize]
-          ALL <class> RETAINING > <bytes>         filter by retained size (>, >=, <, <=, =)
-          ALL <class> AGGREGATE COUNT|MAX|SUM retainedSize
-          TOP <n> BY retainedSize                 across all classes
-          BOTTOM <n> BY retainedSize              across all classes
+          CLASS <class> TOP <n> [BY retainedSize]
+          CLASS <class> BOTTOM <n> [BY retainedSize]
+          CLASS <class> RETAINING > <bytes>       filter by retained size (>, >=, <, <=, =)
+          CLASS <class> COUNT|SUM retainedSize|MAX retainedSize
+          TOP <n> [BY retainedSize]               across all classes
+          BOTTOM <n> [BY retainedSize]            across all classes
 
         Other queries:
           STATUS                                  object and class counts
           CLASSES [MATCHING <glob>]               all classes sorted by instance count
-          EXPLAIN #<id>                           dominator chain to GC root
-          RETAINED BY #<id> [TOP <n> BY retainedSize]   objects retained by #<id>
+          EXPLAIN i<id>                           dominator chain to GC root
+          RETAINED BY i<id> [TOP <n>]             objects retained by i<id>
 
         Session commands:
           NAMES [MATCHING <glob>]  show named results (optionally filtered)
           EXPLAIN <name>           show what command produced the named result
           CALL THAT <name>         name the last result (persists a bitset to disk)
-          CALL @<id> <name>      name a specific history entry
-          FORGET <name>          remove a name
-          UNDO                   reverse the last CALL or FORGET
-          HISTORY [<n>]          show recent commands (default 10)
+          CALL h<id> <name>        name a specific history entry
+          FORGET <name>            remove a name
+          UNDO                     reverse the last CALL or FORGET
+          HISTORY [<n>]            show recent commands (default 10)
 
         SQL:  any SELECT … FROM <result_table> … is passed to SQLite
         exit / quit / Ctrl-D    leave the REPL
@@ -152,7 +155,9 @@ public final class Main implements Runnable {
                 while (true) {
                     String line;
                     try {
-                        line = reader.readLine("heapo> ");
+                        String sigil = session.thatSigil();
+                        String prompt = sigil.isEmpty() ? "heapo> " : "heapo " + sigil + "> ";
+                        line = reader.readLine(prompt);
                     } catch (EndOfFileException | UserInterruptException e) {
                         break;
                     }

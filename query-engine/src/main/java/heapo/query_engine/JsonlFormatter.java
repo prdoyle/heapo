@@ -13,7 +13,7 @@ public final class JsonlFormatter {
         var sb = new StringBuilder();
         for (var row : rows) {
             sb.append("{\"rank\":").append(row.rank())
-              .append(",\"id\":\"#").append(row.denseId()).append('"')
+              .append(",\"id\":\"i").append(row.denseId()).append('"')
               .append(",\"type\":\"").append(esc(row.className())).append('"')
               .append(",\"retainedSize\":").append(row.retainedSize())
               .append(",\"shallowSize\":").append(row.shallowSize())
@@ -29,7 +29,7 @@ public final class JsonlFormatter {
     public static String formatClasses(List<ClassInfo> classes) {
         var sb = new StringBuilder();
         for (var c : classes) {
-            sb.append("{\"id\":\"#").append(c.denseId()).append('"')
+            sb.append("{\"id\":\"i").append(c.denseId()).append('"')
               .append(",\"className\":\"").append(esc(c.className())).append('"')
               .append(",\"instanceCount\":").append(c.instanceCount())
               .append("}\n");
@@ -41,10 +41,12 @@ public final class JsonlFormatter {
         var sb = new StringBuilder();
         for (var node : path) {
             sb.append("{\"depth\":").append(node.depth())
-              .append(",\"id\":\"#").append(node.denseId()).append('"')
+              .append(",\"id\":\"i").append(node.denseId()).append('"')
               .append(",\"type\":\"").append(esc(node.className())).append('"')
-              .append(",\"retainedSize\":").append(node.retainedSize())
-              .append("}\n");
+              .append(",\"retainedSize\":").append(node.retainedSize());
+            if (node.notes() != null)
+                sb.append(",\"notes\":\"").append(esc(node.notes())).append('"');
+            sb.append("}\n");
         }
         return sb.toString();
     }

@@ -33,7 +33,7 @@ class HeapSessionTest {
     @Test
     void queryIsRecordedInHistory() throws Exception {
         try (var session = new HeapSession(heap, registry, dbPath)) {
-            session.execute("ALL heapo.samples.KnownObjects$Bar TOP 1 BY retainedSize");
+            session.execute("CLASS heapo.samples.KnownObjects$Bar TOP 1 BY retainedSize");
             String hist = session.execute("HISTORY 5");
             assertTrue(hist.contains("KnownObjects"), "History should contain the command");
         }
@@ -42,7 +42,7 @@ class HeapSessionTest {
     @Test
     void callThatBindsName() throws Exception {
         try (var session = new HeapSession(heap, registry, dbPath)) {
-            session.execute("ALL heapo.samples.KnownObjects$Bar TOP 1 BY retainedSize");
+            session.execute("CLASS heapo.samples.KnownObjects$Bar TOP 1 BY retainedSize");
             String result = session.execute("CALL THAT myBars");
             assertTrue(result.contains("myBars"), "Result should confirm the bound name");
 
@@ -54,7 +54,7 @@ class HeapSessionTest {
     @Test
     void forgetRemovesName() throws Exception {
         try (var session = new HeapSession(heap, registry, dbPath)) {
-            session.execute("ALL heapo.samples.KnownObjects$Bar TOP 1 BY retainedSize");
+            session.execute("CLASS heapo.samples.KnownObjects$Bar TOP 1 BY retainedSize");
             session.execute("CALL THAT tempName");
             session.execute("FORGET tempName");
 
@@ -69,7 +69,7 @@ class HeapSessionTest {
 
         // First session: run a query and name the result
         try (var session = new HeapSession(heap, registry, localDb)) {
-            session.execute("ALL heapo.samples.KnownObjects$Bar TOP 2 BY retainedSize");
+            session.execute("CLASS heapo.samples.KnownObjects$Bar TOP 2 BY retainedSize");
             session.execute("CALL THAT persistedBars");
         }
 
@@ -102,8 +102,8 @@ class HeapSessionTest {
     void historyLimitIsRespected() throws Exception {
         Path limitDb = tempRoot.resolve("limit-test.db");
         try (var session = new HeapSession(heap, registry, limitDb)) {
-            session.execute("ALL heapo.samples.KnownObjects$Bar TOP 1 BY retainedSize");
-            session.execute("ALL heapo.samples.KnownObjects$Foo TOP 1 BY retainedSize");
+            session.execute("CLASS heapo.samples.KnownObjects$Bar TOP 1 BY retainedSize");
+            session.execute("CLASS heapo.samples.KnownObjects$Foo TOP 1 BY retainedSize");
             String hist = session.execute("HISTORY 1");
             // Should have exactly one JSON line (plus trailing newline)
             long lineCount = hist.lines().filter(l -> !l.isBlank()).count();
@@ -118,7 +118,7 @@ class HeapSessionTest {
         Path sqlDb = tempRoot.resolve("sql-test.db");
         try (var session = new HeapSession(heap, registry, sqlDb)) {
             // Run a DSL query to create the table
-            session.execute("ALL heapo.samples.KnownObjects$Bar TOP 5 BY retainedSize");
+            session.execute("CLASS heapo.samples.KnownObjects$Bar TOP 5 BY retainedSize");
             session.execute("CALL THAT myBars");
 
             // Get the internal table name from names → history
@@ -166,7 +166,7 @@ class HeapSessionTest {
     void undoCallThatRemovesBinding() throws Exception {
         Path p = tempRoot.resolve("undo-call.db");
         try (var session = new HeapSession(heap, registry, p)) {
-            session.execute("ALL heapo.samples.KnownObjects$Bar TOP 1 BY retainedSize");
+            session.execute("CLASS heapo.samples.KnownObjects$Bar TOP 1 BY retainedSize");
             session.execute("CALL THAT tempName");
             String undo = session.execute("UNDO");
             assertFalse(undo.contains("\"error\""), "UNDO should succeed: " + undo);
@@ -181,7 +181,7 @@ class HeapSessionTest {
     void undoForgetRestoresBinding() throws Exception {
         Path p = tempRoot.resolve("undo-forget.db");
         try (var session = new HeapSession(heap, registry, p)) {
-            session.execute("ALL heapo.samples.KnownObjects$Bar TOP 1 BY retainedSize");
+            session.execute("CLASS heapo.samples.KnownObjects$Bar TOP 1 BY retainedSize");
             session.execute("CALL THAT savedName");
             session.execute("FORGET savedName");
             String undo = session.execute("UNDO");
@@ -205,9 +205,9 @@ class HeapSessionTest {
     void undoCallRestoresPreviousBinding() throws Exception {
         Path p = tempRoot.resolve("undo-displace.db");
         try (var session = new HeapSession(heap, registry, p)) {
-            session.execute("ALL heapo.samples.KnownObjects$Bar TOP 1 BY retainedSize");
+            session.execute("CLASS heapo.samples.KnownObjects$Bar TOP 1 BY retainedSize");
             session.execute("CALL THAT myName");
-            session.execute("ALL heapo.samples.KnownObjects$Bar TOP 2 BY retainedSize");
+            session.execute("CLASS heapo.samples.KnownObjects$Bar TOP 2 BY retainedSize");
             session.execute("CALL THAT myName"); // displaces the first binding
             session.execute("UNDO");
 
@@ -219,14 +219,14 @@ class HeapSessionTest {
         }
     }
 
-    // ── Phase: BitSetAnswer (ALL <class> as standalone source) ────────────────
+    // ── Phase: BitSetAnswer (CLASS <class> as standalone source) ────────────────
 
     @Test
     void allClassAloneDisplaysTopN() throws Exception {
         Path p = tempRoot.resolve("bitset-display.db");
         try (var session = new HeapSession(heap, registry, p)) {
-            String result = session.execute("ALL heapo.samples.KnownObjects$Bar");
-            assertFalse(result.contains("\"error\""), "ALL <class> alone should succeed: " + result);
+            String result = session.execute("CLASS heapo.samples.KnownObjects$Bar");
+            assertFalse(result.contains("\"error\""), "CLASS <class> alone should succeed: " + result);
             assertTrue(result.contains("\"rank\""), "Should display ranked rows");
         }
     }
@@ -235,8 +235,8 @@ class HeapSessionTest {
     void allWildcardAloneDisplaysTopN() throws Exception {
         Path p = tempRoot.resolve("bitset-wildcard.db");
         try (var session = new HeapSession(heap, registry, p)) {
-            String result = session.execute("ALL *");
-            assertFalse(result.contains("\"error\""), "ALL * alone should succeed: " + result);
+            String result = session.execute("CLASS *");
+            assertFalse(result.contains("\"error\""), "CLASS * alone should succeed: " + result);
             assertTrue(result.contains("\"rank\""), "Should display ranked rows");
         }
     }
@@ -245,9 +245,9 @@ class HeapSessionTest {
     void thatAfterAllClassIsBitSet() throws Exception {
         Path p = tempRoot.resolve("bitset-that.db");
         try (var session = new HeapSession(heap, registry, p)) {
-            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CLASS heapo.samples.KnownObjects$Bar");
             String result = session.execute("THAT");
-            assertFalse(result.contains("\"error\""), "THAT after ALL <class> should succeed: " + result);
+            assertFalse(result.contains("\"error\""), "THAT after CLASS <class> should succeed: " + result);
             assertTrue(result.contains("\"rank\""), "THAT should show ranked rows");
         }
     }
@@ -258,7 +258,7 @@ class HeapSessionTest {
 
         int targetHistId;
         try (var session = new HeapSession(heap, registry, p)) {
-            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CLASS heapo.samples.KnownObjects$Bar");
             String callResult = session.execute("CALL THAT myBars");
             assertFalse(callResult.contains("\"error\""), "CALL THAT on BitSet should succeed: " + callResult);
             assertTrue(callResult.contains("myBars"), "Should confirm bound name");
@@ -275,7 +275,7 @@ class HeapSessionTest {
             String names = session.execute("NAMES");
             assertTrue(names.contains("myBars"), "Name should survive restart");
 
-            String recalled = session.execute("@" + targetHistId);
+            String recalled = session.execute("h" + targetHistId);
             assertFalse(recalled.contains("\"error\""),
                 "Recall of named bitset should succeed after restart: " + recalled);
             assertTrue(recalled.contains("\"rank\""), "Recalled bitset should show ranked rows");
@@ -288,7 +288,7 @@ class HeapSessionTest {
     void fromThatAfterAllClassWorks() throws Exception {
         Path p = tempRoot.resolve("from-that.db");
         try (var session = new HeapSession(heap, registry, p)) {
-            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CLASS heapo.samples.KnownObjects$Bar");
             String result = session.execute("FROM THAT TOP 5 BY retainedSize");
             assertFalse(result.contains("\"error\""), "FROM THAT should succeed: " + result);
             assertTrue(result.contains("\"rank\""), "Should show ranked rows");
@@ -299,7 +299,7 @@ class HeapSessionTest {
     void fromNamedBitSetWorks() throws Exception {
         Path p = tempRoot.resolve("from-named.db");
         try (var session = new HeapSession(heap, registry, p)) {
-            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CLASS heapo.samples.KnownObjects$Bar");
             session.execute("CALL THAT bars");
             String result = session.execute("FROM bars TOP 5 BY retainedSize");
             assertFalse(result.contains("\"error\""), "FROM <name> should succeed: " + result);
@@ -311,12 +311,12 @@ class HeapSessionTest {
     void inFilterNarrowsSet() throws Exception {
         Path p = tempRoot.resolve("in-filter.db");
         try (var session = new HeapSession(heap, registry, p)) {
-            // ALL * gives the full heap; bars is a subset
-            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            // CLASS * gives the full heap; bars is a subset
+            session.execute("CLASS heapo.samples.KnownObjects$Bar");
             session.execute("CALL THAT bars");
 
-            // ALL * IN bars should be the same as bars
-            String result = session.execute("ALL * IN bars TOP 100 BY retainedSize");
+            // CLASS * IN bars should be the same as bars
+            String result = session.execute("CLASS * IN bars TOP 100 BY retainedSize");
             assertFalse(result.contains("\"error\""), "IN filter should succeed: " + result);
 
             // Result must only contain Bar instances
@@ -331,11 +331,11 @@ class HeapSessionTest {
     void notInFilterExcludesSet() throws Exception {
         Path p = tempRoot.resolve("not-in-filter.db");
         try (var session = new HeapSession(heap, registry, p)) {
-            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CLASS heapo.samples.KnownObjects$Bar");
             session.execute("CALL THAT bars");
 
-            // ALL * NOT IN bars should contain no Bar instances
-            String result = session.execute("ALL * NOT IN bars TOP 100 BY retainedSize");
+            // CLASS * NOT IN bars should contain no Bar instances
+            String result = session.execute("CLASS * NOT IN bars TOP 100 BY retainedSize");
             assertFalse(result.contains("\"error\""), "NOT IN filter should succeed: " + result);
 
             for (String line : result.lines().filter(l -> !l.isBlank()).toList()) {
@@ -349,13 +349,13 @@ class HeapSessionTest {
     void fromNameAggregateCount() throws Exception {
         Path p = tempRoot.resolve("from-agg.db");
         try (var session = new HeapSession(heap, registry, p)) {
-            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CLASS heapo.samples.KnownObjects$Bar");
             session.execute("CALL THAT bars");
 
-            String allCount  = session.execute("ALL heapo.samples.KnownObjects$Bar AGGREGATE COUNT");
-            String fromCount = session.execute("FROM bars AGGREGATE COUNT");
+            String allCount  = session.execute("CLASS heapo.samples.KnownObjects$Bar COUNT");
+            String fromCount = session.execute("FROM bars COUNT");
 
-            assertFalse(fromCount.contains("\"error\""), "FROM <name> AGGREGATE COUNT should succeed");
+            assertFalse(fromCount.contains("\"error\""), "FROM <name> COUNT should succeed");
             // Both should report the same count
             assertTrue(fromCount.contains("\"count\""), "Should have count field");
         }
@@ -367,9 +367,9 @@ class HeapSessionTest {
     void namesMatchingFiltersResults() throws Exception {
         Path p = tempRoot.resolve("names-matching.db");
         try (var session = new HeapSession(heap, registry, p)) {
-            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CLASS heapo.samples.KnownObjects$Bar");
             session.execute("CALL THAT alphaSet");
-            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CLASS heapo.samples.KnownObjects$Bar");
             session.execute("CALL THAT betaSet");
 
             String all     = session.execute("NAMES");
@@ -390,7 +390,7 @@ class HeapSessionTest {
     void gcRootsBuiltinReturnsNonEmptyBitSet() throws Exception {
         Path p = tempRoot.resolve("builtin-gcroots.db");
         try (var session = new HeapSession(heap, registry, p)) {
-            String result = session.execute("FROM GcRoots AGGREGATE COUNT");
+            String result = session.execute("FROM GcRoots COUNT");
             assertFalse(result.contains("\"error\""), "GcRoots should resolve: " + result);
             assertTrue(result.contains("\"count\""), "Should return count");
             long count = Long.parseLong(result.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
@@ -402,7 +402,7 @@ class HeapSessionTest {
     void threadsBuiltinReturnsZeroOrMore() throws Exception {
         Path p = tempRoot.resolve("builtin-threads.db");
         try (var session = new HeapSession(heap, registry, p)) {
-            String result = session.execute("FROM Threads AGGREGATE COUNT");
+            String result = session.execute("FROM Threads COUNT");
             assertFalse(result.contains("\"error\""), "Threads built-in should resolve: " + result);
             assertTrue(result.contains("\"count\""), "Should return count");
         }
@@ -412,7 +412,7 @@ class HeapSessionTest {
     void builtinNameUsableInRetainedByFilter() throws Exception {
         Path p = tempRoot.resolve("builtin-in-filter.db");
         try (var session = new HeapSession(heap, registry, p)) {
-            String result = session.execute("ALL * RETAINED BY GcRoots AGGREGATE COUNT");
+            String result = session.execute("CLASS * RETAINED BY GcRoots COUNT");
             assertFalse(result.contains("\"error\""),
                 "RETAINED BY GcRoots should resolve: " + result);
             long retained = Long.parseLong(result.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
@@ -427,11 +427,11 @@ class HeapSessionTest {
     void ofTypeExactlyFiltersToExactClass() throws Exception {
         Path p = tempRoot.resolve("of-type-exactly.db");
         try (var session = new HeapSession(heap, registry, p)) {
-            // ALL * OF TYPE EXACTLY Bar should give the same count as ALL Bar
+            // CLASS * OF TYPE EXACTLY Bar should give the same count as ALL Bar
             String exactResult = session.execute(
-                "ALL * OF TYPE EXACTLY heapo.samples.KnownObjects$Bar AGGREGATE COUNT");
+                "CLASS * OF TYPE EXACTLY heapo.samples.KnownObjects$Bar COUNT");
             String directResult = session.execute(
-                "ALL heapo.samples.KnownObjects$Bar AGGREGATE COUNT");
+                "CLASS heapo.samples.KnownObjects$Bar COUNT");
 
             assertFalse(exactResult.contains("\"error\""),
                 "OF TYPE EXACTLY should succeed: " + exactResult);
@@ -439,7 +439,7 @@ class HeapSessionTest {
             String exactCount  = exactResult.replaceAll(".*\"count\":(\\d+).*", "$1").strip();
             String directCount = directResult.replaceAll(".*\"count\":(\\d+).*", "$1").strip();
             assertEquals(directCount, exactCount,
-                "OF TYPE EXACTLY should match direct ALL <class> count");
+                "OF TYPE EXACTLY should match direct CLASS <class> count");
         }
     }
 
@@ -448,8 +448,8 @@ class HeapSessionTest {
         Path p = tempRoot.resolve("of-type-subclass.db");
         try (var session = new HeapSession(heap, registry, p)) {
             // OF TYPE java.lang.Object should include everything (all objects extend Object)
-            String objCount = session.execute("ALL * OF TYPE java.lang.Object AGGREGATE COUNT");
-            String allCount = session.execute("ALL * AGGREGATE COUNT");
+            String objCount = session.execute("CLASS * OF TYPE java.lang.Object COUNT");
+            String allCount = session.execute("CLASS * COUNT");
 
             assertFalse(objCount.contains("\"error\""),
                 "OF TYPE java.lang.Object should succeed: " + objCount);
@@ -468,7 +468,7 @@ class HeapSessionTest {
     void explainNameShowsSourceCommand() throws Exception {
         Path p = tempRoot.resolve("explain-name.db");
         try (var session = new HeapSession(heap, registry, p)) {
-            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CLASS heapo.samples.KnownObjects$Bar");
             session.execute("CALL THAT myBarsE");
 
             String result = session.execute("EXPLAIN myBarsE");
@@ -496,11 +496,11 @@ class HeapSessionTest {
         Path p = tempRoot.resolve("referencing.db");
         try (var session = new HeapSession(heap, registry, p)) {
             // Build a set of objects and find who references them
-            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CLASS heapo.samples.KnownObjects$Bar");
             session.execute("CALL THAT bars");
 
-            // ALL * REFERENCING bars = objects that directly point to any bar
-            String result = session.execute("ALL * REFERENCING bars AGGREGATE COUNT");
+            // CLASS * REFERENCING bars = objects that directly point to any bar
+            String result = session.execute("CLASS * REFERENCING bars COUNT");
             assertFalse(result.contains("\"error\""),
                 "REFERENCING filter should succeed: " + result);
             assertTrue(result.contains("\"count\""), "Should return count");
@@ -513,7 +513,7 @@ class HeapSessionTest {
         Path p = tempRoot.resolve("referenced-by.db");
         try (var session = new HeapSession(heap, registry, p)) {
             // GcRoots reference some objects; find those objects
-            String result = session.execute("ALL * REFERENCED BY GcRoots AGGREGATE COUNT");
+            String result = session.execute("CLASS * REFERENCED BY GcRoots COUNT");
             assertFalse(result.contains("\"error\""),
                 "REFERENCED BY filter should succeed: " + result);
             assertTrue(result.contains("\"count\""), "Should return count");
@@ -530,8 +530,8 @@ class HeapSessionTest {
         Path p = tempRoot.resolve("sized-filter.db");
         try (var session = new HeapSession(heap, registry, p)) {
             // All objects sized > 0 bytes should be at most the full set
-            String allCount  = session.execute("ALL * AGGREGATE COUNT");
-            String sizResult = session.execute("ALL * SIZED > 0 AGGREGATE COUNT");
+            String allCount  = session.execute("CLASS * COUNT");
+            String sizResult = session.execute("CLASS * SIZED > 0 COUNT");
 
             assertFalse(sizResult.contains("\"error\""), "SIZED filter should succeed: " + sizResult);
             long allN = Long.parseLong(allCount.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
@@ -540,7 +540,7 @@ class HeapSessionTest {
             assertTrue(sizN >= 0,   "SIZED > 0 count should be non-negative");
 
             // Nothing has negative size
-            String zeroResult = session.execute("ALL * SIZED > 99999999 AGGREGATE COUNT");
+            String zeroResult = session.execute("CLASS * SIZED > 99999999 COUNT");
             assertFalse(zeroResult.contains("\"error\""), "SIZED > huge should succeed: " + zeroResult);
         }
     }
@@ -552,16 +552,16 @@ class HeapSessionTest {
         Path p = tempRoot.resolve("retaining-pipeline.db");
         try (var session = new HeapSession(heap, registry, p)) {
             // Build a named set, then filter it by retained size
-            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CLASS heapo.samples.KnownObjects$Bar");
             session.execute("CALL THAT allBars");
 
             // Keep only bars retaining > 0 bytes (all should qualify)
-            String result = session.execute("FROM allBars RETAINING > 0 AGGREGATE COUNT");
+            String result = session.execute("FROM allBars RETAINING > 0 COUNT");
             assertFalse(result.contains("\"error\""), "RETAINING filter in pipeline should succeed: " + result);
             assertTrue(result.contains("\"count\""), "Should return count field");
 
             // Keep only bars retaining > Long.MAX_VALUE (none should qualify)
-            String empty = session.execute("FROM allBars RETAINING > 9999999999999 AGGREGATE COUNT");
+            String empty = session.execute("FROM allBars RETAINING > 9999999999999 COUNT");
             assertFalse(empty.contains("\"error\""), "RETAINING > huge should succeed: " + empty);
             long count = Long.parseLong(empty.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
             assertEquals(0, count, "No objects should retain > 9999999999999 bytes");
@@ -572,11 +572,11 @@ class HeapSessionTest {
     void retainingFilterCombinesWithInFilter() throws Exception {
         Path p = tempRoot.resolve("retaining-combined.db");
         try (var session = new HeapSession(heap, registry, p)) {
-            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CLASS heapo.samples.KnownObjects$Bar");
             session.execute("CALL THAT bars");
 
             // Bars intersected with bars (no-op), then filtered by retaining > 0
-            String result = session.execute("ALL * IN bars RETAINING > 0 AGGREGATE COUNT");
+            String result = session.execute("CLASS * IN bars RETAINING > 0 COUNT");
             assertFalse(result.contains("\"error\""),
                 "Combined IN + RETAINING filters should succeed: " + result);
             assertTrue(result.contains("\"count\""), "Should return count");
@@ -590,15 +590,15 @@ class HeapSessionTest {
         Path p = tempRoot.resolve("retained-by-filter.db");
         try (var session = new HeapSession(heap, registry, p)) {
             // Build a named bitset of top-retained Bar instances
-            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CLASS heapo.samples.KnownObjects$Bar");
             session.execute("CALL THAT bars");
 
             // Total heap count
-            String allCountJson = session.execute("ALL * AGGREGATE COUNT");
+            String allCountJson = session.execute("CLASS * COUNT");
             long allCount = Long.parseLong(allCountJson.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
 
             // Objects retained by bars — must be ≤ total heap size
-            String retainedCountJson = session.execute("ALL * RETAINED BY bars AGGREGATE COUNT");
+            String retainedCountJson = session.execute("CLASS * RETAINED BY bars COUNT");
             assertFalse(retainedCountJson.contains("\"error\""),
                 "RETAINED BY filter should succeed: " + retainedCountJson);
             assertTrue(retainedCountJson.contains("\"count\""), "Should have count field");
@@ -617,11 +617,11 @@ class HeapSessionTest {
         Path p = tempRoot.resolve("retained-by-self.db");
         try (var session = new HeapSession(heap, registry, p)) {
             // Build a bitset of all bars (no terminal = BitSetAnswer)
-            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CLASS heapo.samples.KnownObjects$Bar");
             session.execute("CALL THAT bars2");
 
             // Bars are retained by themselves, so must appear in the result
-            String result = session.execute("ALL * RETAINED BY bars2 TOP 20 BY retainedSize");
+            String result = session.execute("CLASS * RETAINED BY bars2 TOP 20 BY retainedSize");
             assertFalse(result.contains("\"error\""), "RETAINED BY should succeed: " + result);
             assertTrue(result.contains("KnownObjects$Bar"),
                 "Bar instances must appear in their own retained set");
@@ -634,7 +634,7 @@ class HeapSessionTest {
     void replOutputIsHumanFormattedNotJsonl() throws Exception {
         // Simulate what the REPL loop does: execute then format as HUMAN
         try (var session = new HeapSession(heap, registry, dbPath)) {
-            String jsonl  = session.execute("ALL * TOP 5 BY retainedSize");
+            String jsonl  = session.execute("CLASS * TOP 5 BY retainedSize");
             String output = OutputFormatter.convert(jsonl, OutputFormatter.Format.HUMAN);
 
             assertFalse(output.startsWith("{"), "REPL output must not be raw JSONL");
@@ -651,7 +651,7 @@ class HeapSessionTest {
         Path p = tempRoot.resolve("bottom-n.db");
         try (var session = new HeapSession(heap, registry, p)) {
             String result = session.execute(
-                "ALL heapo.samples.KnownObjects$Bar BOTTOM 2 BY retainedSize");
+                "CLASS heapo.samples.KnownObjects$Bar BOTTOM 2 BY retainedSize");
             assertFalse(result.contains("\"error\""), "BOTTOM query should succeed: " + result);
             long lineCount = result.lines().filter(l -> !l.isBlank()).count();
             assertTrue(lineCount <= 2, "Should return at most 2 rows");
@@ -662,7 +662,7 @@ class HeapSessionTest {
     void aggregateCountWildcard() throws Exception {
         Path p = tempRoot.resolve("agg-count-all.db");
         try (var session = new HeapSession(heap, registry, p)) {
-            String result = session.execute("ALL * AGGREGATE COUNT");
+            String result = session.execute("CLASS * COUNT");
             assertFalse(result.contains("\"error\""), "Wildcard count should succeed: " + result);
             assertTrue(result.contains("\"count\""), "Result should contain count field");
         }
@@ -673,7 +673,7 @@ class HeapSessionTest {
         Path p = tempRoot.resolve("agg-max.db");
         try (var session = new HeapSession(heap, registry, p)) {
             String result = session.execute(
-                "ALL heapo.samples.KnownObjects$Bar AGGREGATE MAX retainedSize");
+                "CLASS heapo.samples.KnownObjects$Bar MAX retainedSize");
             assertFalse(result.contains("\"error\""), "MAX query should succeed: " + result);
             assertTrue(result.contains("\"MAX\""), "Result should report MAX func");
             assertTrue(result.contains("\"retainedSize\""), "Result should contain retainedSize");
@@ -685,7 +685,7 @@ class HeapSessionTest {
         Path p = tempRoot.resolve("agg-sum.db");
         try (var session = new HeapSession(heap, registry, p)) {
             String result = session.execute(
-                "ALL heapo.samples.KnownObjects$Bar AGGREGATE SUM retainedSize");
+                "CLASS heapo.samples.KnownObjects$Bar SUM retainedSize");
             assertFalse(result.contains("\"error\""), "SUM query should succeed: " + result);
             assertTrue(result.contains("\"SUM\""), "Result should report SUM func");
         }
@@ -697,18 +697,19 @@ class HeapSessionTest {
         try (var session = new HeapSession(heap, registry, p)) {
             // Get a non-trivial object first
             String topResult = session.execute(
-                "ALL heapo.samples.KnownObjects$Bar TOP 1 BY retainedSize");
+                "CLASS heapo.samples.KnownObjects$Bar TOP 1 BY retainedSize");
             assertFalse(topResult.contains("\"error\""), "TOP query should succeed");
-            // Extract the id from the first line, e.g. "id":"#42"
-            int idStart = topResult.indexOf("\"#") + 2;
+            // Extract the id from the first line, e.g. "id":"i42"
+            int marker  = topResult.indexOf("\"id\":\"i");
+            int idStart = marker + "\"id\":\"i".length();
             int idEnd   = topResult.indexOf('"', idStart);
             int denseId = Integer.parseInt(topResult.substring(idStart, idEnd));
 
-            String subtree = session.execute("RETAINED BY #" + denseId);
+            String subtree = session.execute("RETAINED BY i" + denseId);
             assertFalse(subtree.contains("\"error\""),
                 "RETAINED BY query should succeed: " + subtree);
             // The root itself should always appear
-            assertTrue(subtree.contains("\"#" + denseId + "\""),
+            assertTrue(subtree.contains("\"i" + denseId + "\""),
                 "Root object should appear in subtree");
         }
     }
@@ -719,7 +720,7 @@ class HeapSessionTest {
         try (var session = new HeapSession(heap, registry, p)) {
             // Ask for objects retaining more than 0 bytes (should return all)
             String result = session.execute(
-                "ALL heapo.samples.KnownObjects$Bar RETAINING > 0");
+                "CLASS heapo.samples.KnownObjects$Bar RETAINING > 0");
             assertFalse(result.contains("\"error\""), "RETAINING query should succeed: " + result);
         }
     }
@@ -731,8 +732,8 @@ class HeapSessionTest {
         Path p = tempRoot.resolve("reachable-from.db");
         try (var session = new HeapSession(heap, registry, p)) {
             // All objects are reachable from GcRoots (or a subset thereof)
-            String totalResult    = session.execute("ALL * AGGREGATE COUNT");
-            String reachableResult = session.execute("ALL * REACHABLE FROM GcRoots AGGREGATE COUNT");
+            String totalResult    = session.execute("CLASS * COUNT");
+            String reachableResult = session.execute("CLASS * REACHABLE FROM GcRoots COUNT");
 
             assertFalse(reachableResult.contains("\"error\""),
                 "REACHABLE FROM filter should succeed: " + reachableResult);
@@ -749,11 +750,11 @@ class HeapSessionTest {
         Path p = tempRoot.resolve("reachable-transitive.db");
         try (var session = new HeapSession(heap, registry, p)) {
             // Build a seed set then find reachable objects
-            session.execute("ALL heapo.samples.KnownObjects$Bar");
+            session.execute("CLASS heapo.samples.KnownObjects$Bar");
             session.execute("CALL THAT bars");
 
-            String directCount    = session.execute("ALL * REFERENCED BY bars AGGREGATE COUNT");
-            String reachableCount = session.execute("ALL * REACHABLE FROM bars AGGREGATE COUNT");
+            String directCount    = session.execute("CLASS * REFERENCED BY bars COUNT");
+            String reachableCount = session.execute("CLASS * REACHABLE FROM bars COUNT");
 
             assertFalse(reachableCount.contains("\"error\""),
                 "REACHABLE FROM should succeed: " + reachableCount);
@@ -773,7 +774,7 @@ class HeapSessionTest {
         Path p = tempRoot.resolve("where-exact.db");
         try (var session = new HeapSession(heap, registry, p)) {
             String result = session.execute(
-                "ALL heapo.samples.KnownObjects$Foo WHERE size = 42 AGGREGATE COUNT");
+                "CLASS heapo.samples.KnownObjects$Foo WHERE size = 42 COUNT");
             assertFalse(result.contains("\"error\""), "WHERE exact should succeed: " + result);
             long count = Long.parseLong(result.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
             assertEquals(1L, count, "Exactly one Foo has size=42");
@@ -785,7 +786,7 @@ class HeapSessionTest {
         Path p = tempRoot.resolve("where-no-match.db");
         try (var session = new HeapSession(heap, registry, p)) {
             String result = session.execute(
-                "ALL heapo.samples.KnownObjects$Foo WHERE size = 0 AGGREGATE COUNT");
+                "CLASS heapo.samples.KnownObjects$Foo WHERE size = 0 COUNT");
             assertFalse(result.contains("\"error\""), "WHERE no-match should succeed: " + result);
             long count = Long.parseLong(result.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
             assertEquals(0L, count, "No Foo has size=0");
@@ -798,9 +799,9 @@ class HeapSessionTest {
         Path p = tempRoot.resolve("where-gt.db");
         try (var session = new HeapSession(heap, registry, p)) {
             String allResult = session.execute(
-                "ALL heapo.samples.KnownObjects$Foo WHERE size > 10 AGGREGATE COUNT");
+                "CLASS heapo.samples.KnownObjects$Foo WHERE size > 10 COUNT");
             String oneResult = session.execute(
-                "ALL heapo.samples.KnownObjects$Foo WHERE size > 50 AGGREGATE COUNT");
+                "CLASS heapo.samples.KnownObjects$Foo WHERE size > 50 COUNT");
             assertFalse(allResult.contains("\"error\""), "WHERE > 10 should succeed: " + allResult);
             assertFalse(oneResult.contains("\"error\""), "WHERE > 50 should succeed: " + oneResult);
             long allCount = Long.parseLong(allResult.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
@@ -816,7 +817,7 @@ class HeapSessionTest {
         Path p = tempRoot.resolve("where-bar.db");
         try (var session = new HeapSession(heap, registry, p)) {
             String result = session.execute(
-                "ALL heapo.samples.KnownObjects$Bar WHERE count = 7 AGGREGATE COUNT");
+                "CLASS heapo.samples.KnownObjects$Bar WHERE count = 7 COUNT");
             assertFalse(result.contains("\"error\""), "WHERE Bar.count should succeed: " + result);
             long count = Long.parseLong(result.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
             assertEquals(1L, count, "Exactly one Bar has count=7");

@@ -17,7 +17,8 @@ import java.util.*;
 final class DslCompleter implements Completer {
 
     private static final List<String> TOP_LEVEL = List.of(
-        "ALL", "FROM", "CLASSES", "EXPLAIN", "RETAINED", "STATUS",
+        "CLASS", "FROM", "CLASSES", "EXPLAIN", "RETAINED", "STATUS",
+        "TOP", "BOTTOM",
         "NAMES", "UNDO", "HISTORY", "CALL", "FORGET",
         "SELECT", "WITH", "exit", "quit"
     );
@@ -27,7 +28,7 @@ final class DslCompleter implements Completer {
         "GcRoots", "Threads", "ClassLoaders",
         "SoftReferences", "WeakReferences", "PhantomReferences");
     private static final List<String> PIPELINE_TERMINALS =
-        List.of("TOP", "BOTTOM", "AGGREGATE");
+        List.of("TOP", "BOTTOM", "COUNT", "SUM", "MAX");
 
     private final UnpackedHeap  heap;
     private final NamesManager  names;
@@ -51,14 +52,14 @@ final class DslCompleter implements Completer {
 
         String w0 = words.get(0).toUpperCase();
         switch (w0) {
-            case "ALL"  -> completeAll(words, wordIndex, partial, candidates);
+            case "CLASS" -> completeClass(words, wordIndex, partial, candidates);
             case "FROM" -> completeFrom(words, wordIndex, partial, candidates);
             case "CLASSES", "NAMES" -> {
                 if (wordIndex == 1) suggest(candidates, partial, List.of("MATCHING"));
             }
             case "EXPLAIN" -> {
                 if (wordIndex == 1) {
-                    suggest(candidates, partial, List.of("#"));
+                    suggest(candidates, partial, List.of("i"));
                     suggest(candidates, partial, allNameSuggestions());
                 }
             }
@@ -72,29 +73,27 @@ final class DslCompleter implements Completer {
         }
     }
 
-    private void completeAll(List<String> words, int idx, String partial, List<Candidate> candidates) {
+    private void completeClass(List<String> words, int idx, String partial, List<Candidate> candidates) {
         switch (idx) {
             case 1 -> {
-                // class name
                 try {
                     suggest(candidates, partial, ClassNameIndex.load(heap).allDottedNames());
                 } catch (IOException ignored) {}
                 suggest(candidates, partial, List.of("*"));
             }
             case 2 -> suggest(candidates, partial,
-                List.of("TOP", "BOTTOM", "RETAINING", "AGGREGATE", "IN", "NOT", "RETAINED",
-                        "OF", "SIZED", "REFERENCING", "REFERENCED", "REACHABLE", "WHERE"));
+                List.of("TOP", "BOTTOM", "RETAINING", "COUNT", "SUM", "MAX",
+                        "IN", "NOT", "RETAINED", "OF", "SIZED",
+                        "REFERENCING", "REFERENCED", "REACHABLE", "WHERE"));
             case 3 -> {
                 String w2 = words.get(2).toUpperCase();
-                if (w2.equals("AGGREGATE"))
-                    suggest(candidates, partial, List.of("COUNT", "MAX", "SUM"));
+                if (w2.equals("SUM") || w2.equals("MAX"))
+                    suggest(candidates, partial, List.of("retainedSize"));
             }
             case 4 -> {
                 String w2 = words.get(2).toUpperCase();
                 if (w2.equals("TOP") || w2.equals("BOTTOM"))
                     suggest(candidates, partial, List.of("BY"));
-                else if (w2.equals("AGGREGATE"))
-                    suggest(candidates, partial, List.of("retainedSize"));
             }
             case 5 -> {
                 String w2 = words.get(2).toUpperCase();
@@ -178,7 +177,7 @@ final class DslCompleter implements Completer {
             case 1 -> suggest(candidates, partial, List.of("BY"));
             case 2 -> {
                 if (words.get(1).equalsIgnoreCase("BY"))
-                    suggest(candidates, partial, List.of("#"));
+                    suggest(candidates, partial, List.of("i"));
             }
             case 3 -> suggest(candidates, partial, List.of("TOP"));
             case 5 -> suggest(candidates, partial, List.of("BY"));

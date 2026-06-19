@@ -128,10 +128,15 @@ public final class QueryEngine {
             int cur   = denseId;
             int depth = 0;
             while (cur >= 0 && cur < heap.objectCount()) {
-                int     classDid     = classOf.readInt(cur);
-                String  className    = names.nameOf(classDid);
-                long    retainedSize = retained.readLong(cur);
-                path.add(new ExplainNode(cur, className, retainedSize, depth++));
+                int    classDid  = classOf.readInt(cur);
+                String className = names.nameOf(classDid);
+                String notes     = null;
+                if ("java.lang.Class".equals(className)) {
+                    String represented = names.nameOf(cur);
+                    if (!"?".equals(represented)) notes = represented + ".class";
+                }
+                long retainedSize = retained.readLong(cur);
+                path.add(new ExplainNode(cur, className, retainedSize, depth++, notes));
                 cur = idom.readInt(cur); // -1 = root of dominator tree
             }
         }
