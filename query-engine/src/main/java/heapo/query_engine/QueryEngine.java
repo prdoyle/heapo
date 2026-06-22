@@ -8,7 +8,7 @@ import heapo.unpack.UnpackedHeap;
 
 import java.io.IOException;
 import java.util.*;
-import java.util.Arrays;
+import java.util.BitSet;
 
 /**
  * Executes heap queries against a built index set.
@@ -354,26 +354,22 @@ public final class QueryEngine {
      * Builds a bitset of all instances of {@code className} (or all objects if {@code "*"}).
      * Bit {@code v} is set iff dense ID {@code v} is in the result set.
      */
-    public static long[] buildBitSet(UnpackedHeap heap, IndexRegistry registry,
+    public static BitSet buildBitSet(UnpackedHeap heap, IndexRegistry registry,
                                       String className) throws IOException {
         var names        = ClassNameIndex.load(heap);
         int objectCount  = heap.objectCount();
         boolean allObjs  = className.equals("*");
         int classDenseId = allObjs ? -1 : names.resolve(className);
 
-        int words  = (objectCount + 63) >>> 6;
-        long[] bits = new long[words];
+        BitSet bits = new BitSet(objectCount);
 
         if (allObjs) {
-            Arrays.fill(bits, -1L);
-            int rem = objectCount & 63;
-            if (rem != 0) bits[words - 1] = (1L << rem) - 1;
+            bits.set(0, objectCount);
         } else {
             if (classDenseId < 0) return bits; // class not found → empty
             try (var il = registry.openInstanceList()) {
                 for (long e = il.start(classDenseId), end = il.end(classDenseId); e < end; e++) {
-                    int v = il.edge(e);
-                    bits[v >>> 6] |= 1L << (v & 63);
+                    bits.set(il.edge(e));
                 }
             }
         }
@@ -388,13 +384,13 @@ public final class QueryEngine {
      * The {@code exactly=false} path traverses {@code super-class-of.bin} to find
      * all transitive subclasses, then unions their instance lists.
      */
-    public static long[] buildOfTypeBitSet(UnpackedHeap heap, IndexRegistry registry,
+    public static BitSet buildOfTypeBitSet(UnpackedHeap heap, IndexRegistry registry,
                                             String className, boolean exactly) throws IOException {
         if (exactly) return buildBitSet(heap, registry, className);
 
         var names = ClassNameIndex.load(heap);
         int targetId = names.resolve(className);
-        if (targetId < 0) return new long[(heap.objectCount() + 63) >>> 6]; // class not found
+        if (targetId < 0) return new BitSet(heap.objectCount()); // class not found
 
         // Build classId → superclassId map for all known classes
         Map<Integer, Integer> parentOf = new HashMap<>();
@@ -418,13 +414,11 @@ public final class QueryEngine {
         }
 
         // Union instance lists of all subclasses
-        int objectCount = heap.objectCount();
-        long[] bits = new long[(objectCount + 63) >>> 6];
+        BitSet bits = new BitSet(heap.objectCount());
         try (var il = registry.openInstanceList()) {
             for (int classId : subclasses) {
                 for (long e = il.start(classId), end = il.end(classId); e < end; e++) {
-                    int v = il.edge(e);
-                    bits[v >>> 6] |= 1L << (v & 63);
+                    bits.set(il.edge(e));
                 }
             }
         }
@@ -435,17 +429,13 @@ public final class QueryEngine {
      * Returns a bitset of all objects that have a direct outgoing reference to any object
      * in {@code targetBits}.  Uses the reverse-reference index.
      */
-    public static long[] buildReferencingBitSet(UnpackedHeap heap, IndexRegistry registry,
-                                                 long[] targetBits) throws IOException {
-        int objectCount = heap.objectCount();
-        long[] result = new long[(objectCount + 63) >>> 6];
+    public static BitSet buildReferencingBitSet(UnpackedHeap heap, IndexRegistry registry,
+                                                 BitSet targetBits) throws IOException {
+        BitSet result = new BitSet(heap.objectCount());
         try (var reverseRefs = registry.openReverseRefs()) {
-            for (int v = 0; v < objectCount; v++) {
-                if ((targetBits[v >>> 6] >>> (v & 63) & 1L) != 0L) {
-                    for (long e = reverseRefs.start(v), end = reverseRefs.end(v); e < end; e++) {
-                        int u = reverseRefs.edge(e);
-                        result[u >>> 6] |= 1L << (u & 63);
-                    }
+            for (int v = targetBits.nextSetBit(0); v >= 0; v = targetBits.nextSetBit(v + 1)) {
+                for (long e = reverseRefs.start(v), end = reverseRefs.end(v); e < end; e++) {
+                    result.set(reverseRefs.edge(e));
                 }
             }
         }
@@ -456,17 +446,13 @@ public final class QueryEngine {
      * Returns a bitset of all objects directly referenced (pointed to) by any object
      * in {@code sourceBits}.  Uses the forward-reference index.
      */
-    public static long[] buildReferencedByBitSet(UnpackedHeap heap, IndexRegistry registry,
-                                                  long[] sourceBits) throws IOException {
-        int objectCount = heap.objectCount();
-        long[] result = new long[(objectCount + 63) >>> 6];
+    public static BitSet buildReferencedByBitSet(UnpackedHeap heap, IndexRegistry registry,
+                                                  BitSet sourceBits) throws IOException {
+        BitSet result = new BitSet(heap.objectCount());
         try (var forwardRefs = registry.openForwardRefs()) {
-            for (int u = 0; u < objectCount; u++) {
-                if ((sourceBits[u >>> 6] >>> (u & 63) & 1L) != 0L) {
-                    for (long e = forwardRefs.start(u), end = forwardRefs.end(u); e < end; e++) {
-                        int v = forwardRefs.edge(e);
-                        result[v >>> 6] |= 1L << (v & 63);
-                    }
+            for (int u = sourceBits.nextSetBit(0); u >= 0; u = sourceBits.nextSetBit(u + 1)) {
+                for (long e = forwardRefs.start(u), end = forwardRefs.end(u); e < end; e++) {
+                    result.set(forwardRefs.edge(e));
                 }
             }
         }
@@ -481,22 +467,20 @@ public final class QueryEngine {
      * which uses the dominator tree, reachable objects may be shared with other parts of
      * the heap and are not exclusively dominated by the seed.
      */
-    public static long[] buildReachableFromBitSet(UnpackedHeap heap, IndexRegistry registry,
-                                                   long[] seedBits) throws IOException {
-        int objectCount = heap.objectCount();
-        long[] visited = Arrays.copyOf(seedBits, (objectCount + 63) >>> 6);
-        // Frontier: all seed objects
-        var frontier = new java.util.ArrayDeque<Integer>();
-        for (int u = 0; u < objectCount; u++) {
-            if ((seedBits[u >>> 6] >>> (u & 63) & 1L) != 0L) frontier.add(u);
+    public static BitSet buildReachableFromBitSet(UnpackedHeap heap, IndexRegistry registry,
+                                                   BitSet seedBits) throws IOException {
+        BitSet visited = (BitSet) seedBits.clone();
+        var frontier = new ArrayDeque<Integer>();
+        for (int u = seedBits.nextSetBit(0); u >= 0; u = seedBits.nextSetBit(u + 1)) {
+            frontier.add(u);
         }
         try (var forwardRefs = registry.openForwardRefs()) {
             while (!frontier.isEmpty()) {
                 int u = frontier.poll();
                 for (long e = forwardRefs.start(u), end = forwardRefs.end(u); e < end; e++) {
                     int v = forwardRefs.edge(e);
-                    if ((visited[v >>> 6] >>> (v & 63) & 1L) == 0L) {
-                        visited[v >>> 6] |= 1L << (v & 63);
+                    if (!visited.get(v)) {
+                        visited.set(v);
                         frontier.add(v);
                     }
                 }
@@ -513,9 +497,9 @@ public final class QueryEngine {
      * The schema covers all primitive fields declared by that class and its ancestors.
      * {@code longValue} for booleans: 1 = true, 0 = false.
      */
-    public static long[] buildWhereFilterBitSet(
+    public static BitSet buildWhereFilterBitSet(
             UnpackedHeap heap, IndexRegistry registry,
-            long[] inputBits, int classDenseId,
+            BitSet inputBits, int classDenseId,
             String fieldName, String op, long longValue) throws IOException {
         List<IndexRegistry.FieldDef> schema = registry.loadFieldSchema(classDenseId);
         IndexRegistry.FieldDef field = null;
@@ -525,10 +509,10 @@ public final class QueryEngine {
         if (field == null)
             throw new IllegalArgumentException("Field '" + fieldName + "' not found in schema");
 
-        int recordSize  = IndexRegistry.fieldRecordSize(schema);
-        int byteOff     = field.byteOffset();
-        int typeCode    = field.typeCode();
-        long[] result   = new long[(heap.objectCount() + 63) >>> 6];
+        int recordSize = IndexRegistry.fieldRecordSize(schema);
+        int byteOff    = field.byteOffset();
+        int typeCode   = field.typeCode();
+        BitSet result  = new BitSet(heap.objectCount());
 
         try (var il = registry.openInstanceList();
              var fv = registry.openFieldValues(classDenseId)) {
@@ -537,9 +521,9 @@ public final class QueryEngine {
             int  idx   = 0;
             for (long e = start; e < end; e++, idx++) {
                 int denseId = il.edge(e);
-                if ((inputBits[denseId >>> 6] >>> (denseId & 63) & 1L) == 0L) continue;
+                if (!inputBits.get(denseId)) continue;
                 long val = readPrimitive(fv, (long) idx * recordSize + byteOff, typeCode);
-                if (matchesOp(val, op, longValue)) result[denseId >>> 6] |= 1L << (denseId & 63);
+                if (matchesOp(val, op, longValue)) result.set(denseId);
             }
         }
         return result;
@@ -575,17 +559,17 @@ public final class QueryEngine {
      * Note: {@code Threads}, {@code ClassLoaders}, and reference types use exact class
      * matching — subclasses are not included.
      */
-    public static long[] buildBuiltinBitSet(UnpackedHeap heap, IndexRegistry registry,
+    public static BitSet buildBuiltinBitSet(UnpackedHeap heap, IndexRegistry registry,
                                              String name) throws IOException {
         return switch (name) {
             case "GcRoots" -> {
                 int objectCount = heap.objectCount();
-                long[] bits = new long[(objectCount + 63) >>> 6];
+                BitSet bits = new BitSet(objectCount);
                 try (var gcRoots = registry.openGcRoots()) {
                     long count = gcRoots.intCount();
                     for (long i = 0; i < count; i++) {
                         int v = gcRoots.readInt(i);
-                        if (v >= 0 && v < objectCount) bits[v >>> 6] |= 1L << (v & 63);
+                        if (v >= 0 && v < objectCount) bits.set(v);
                     }
                 }
                 yield bits;
@@ -604,17 +588,13 @@ public final class QueryEngine {
      * any object set in {@code retainerBits}.  Equivalent to the union of
      * {@link #dominatorSubtree} results for each individual retainer object.
      */
-    public static long[] buildRetainedByBitSet(UnpackedHeap heap, IndexRegistry registry,
-                                                long[] retainerBits) throws IOException {
-        int objectCount = heap.objectCount();
-        long[] result = new long[(objectCount + 63) >>> 6];
-
+    public static BitSet buildRetainedByBitSet(UnpackedHeap heap, IndexRegistry registry,
+                                                BitSet retainerBits) throws IOException {
+        BitSet result = new BitSet(heap.objectCount());
         var queue = new ArrayDeque<Integer>();
-        for (int v = 0; v < objectCount; v++) {
-            if ((retainerBits[v >>> 6] >>> (v & 63) & 1L) != 0L) {
-                result[v >>> 6] |= 1L << (v & 63);
-                queue.add(v);
-            }
+        for (int v = retainerBits.nextSetBit(0); v >= 0; v = retainerBits.nextSetBit(v + 1)) {
+            result.set(v);
+            queue.add(v);
         }
 
         try (var domChildren = registry.openDominatorChildren()) {
@@ -622,8 +602,8 @@ public final class QueryEngine {
                 int cur = queue.poll();
                 for (long e = domChildren.start(cur), end = domChildren.end(cur); e < end; e++) {
                     int child = domChildren.edge(e);
-                    if ((result[child >>> 6] >>> (child & 63) & 1L) == 0L) {
-                        result[child >>> 6] |= 1L << (child & 63);
+                    if (!result.get(child)) {
+                        result.set(child);
                         queue.add(child);
                     }
                 }
@@ -632,30 +612,20 @@ public final class QueryEngine {
         return result;
     }
 
-    /** Returns the number of set bits in {@code bits}. */
-    public static int bitSetCardinality(long[] bits) {
-        int count = 0;
-        for (long word : bits) count += Long.bitCount(word);
-        return count;
-    }
-
     /**
      * Returns the top {@code n} objects in the bitset ordered by retained size descending.
      */
     public static List<TopNRow> topNFromBitSet(UnpackedHeap heap, IndexRegistry registry,
-                                                long[] bits, int n) throws IOException {
-        var names       = ClassNameIndex.load(heap);
-        int objectCount = heap.objectCount();
+                                                BitSet bits, int n) throws IOException {
+        var names = ClassNameIndex.load(heap);
 
         PriorityQueue<int[]> topN = new PriorityQueue<>(n + 1,
             (a, b) -> Integer.compare(b[1], a[1])); // max-heap by rank
 
         try (var rank = registry.openRetainedSizeRank()) {
-            for (int v = 0; v < objectCount; v++) {
-                if ((bits[v >>> 6] >>> (v & 63) & 1L) != 0L) {
-                    topN.offer(new int[]{v, rank.readInt(v)});
-                    if (topN.size() > n) topN.poll();
-                }
+            for (int v = bits.nextSetBit(0); v >= 0; v = bits.nextSetBit(v + 1)) {
+                topN.offer(new int[]{v, rank.readInt(v)});
+                if (topN.size() > n) topN.poll();
             }
         }
 
@@ -680,9 +650,8 @@ public final class QueryEngine {
      * Returns the bottom {@code n} objects in the bitset ordered by retained size ascending.
      */
     public static List<TopNRow> bottomNFromBitSet(UnpackedHeap heap, IndexRegistry registry,
-                                                   long[] bits, int n) throws IOException {
-        var names       = ClassNameIndex.load(heap);
-        int objectCount = heap.objectCount();
+                                                   BitSet bits, int n) throws IOException {
+        var names = ClassNameIndex.load(heap);
 
         // Keep N objects with the LARGEST ranks (= smallest retained sizes).
         // Min-heap keyed by rank: pops smallest rank (= largest retained) when overfull.
@@ -690,11 +659,9 @@ public final class QueryEngine {
             (a, b) -> Integer.compare(a[1], b[1]));
 
         try (var rank = registry.openRetainedSizeRank()) {
-            for (int v = 0; v < objectCount; v++) {
-                if ((bits[v >>> 6] >>> (v & 63) & 1L) != 0L) {
-                    bottomN.offer(new int[]{v, rank.readInt(v)});
-                    if (bottomN.size() > n) bottomN.poll();
-                }
+            for (int v = bits.nextSetBit(0); v >= 0; v = bits.nextSetBit(v + 1)) {
+                bottomN.offer(new int[]{v, rank.readInt(v)});
+                if (bottomN.size() > n) bottomN.poll();
             }
         }
 
@@ -718,15 +685,12 @@ public final class QueryEngine {
 
     /** Computes MAX or SUM of retained sizes over all set bits in {@code bits}. */
     public static long aggregateFromBitSet(UnpackedHeap heap, IndexRegistry registry,
-                                            long[] bits, String func) throws IOException {
-        int objectCount = heap.objectCount();
+                                            BitSet bits, String func) throws IOException {
         long acc = func.equals("SUM") ? 0 : Long.MIN_VALUE;
         try (var retained = registry.openRetainedSize()) {
-            for (int v = 0; v < objectCount; v++) {
-                if ((bits[v >>> 6] >>> (v & 63) & 1L) != 0L) {
-                    long rs = retained.readLong(v);
-                    acc = func.equals("SUM") ? acc + rs : Math.max(acc, rs);
-                }
+            for (int v = bits.nextSetBit(0); v >= 0; v = bits.nextSetBit(v + 1)) {
+                long rs = retained.readLong(v);
+                acc = func.equals("SUM") ? acc + rs : Math.max(acc, rs);
             }
         }
         return func.equals("MAX") && acc == Long.MIN_VALUE ? 0 : acc;

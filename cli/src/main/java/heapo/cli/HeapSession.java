@@ -12,6 +12,7 @@ import java.nio.ByteOrder;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.SQLException;
+import java.util.BitSet;
 import java.util.List;
 import java.util.UUID;
 
@@ -288,7 +289,7 @@ public final class HeapSession implements AutoCloseable {
 
     // ── Pipeline execution ────────────────────────────────────────────────────
 
-    private long[] resolveSource(DslParser.Source source) throws IOException, SQLException {
+    private BitSet resolveSource(DslParser.Source source) throws IOException, SQLException {
         return switch (source) {
             case DslParser.ClassSource cs -> QueryEngine.buildBitSet(heap, registry, cs.className());
             case DslParser.NameSource ns  -> resolveBitSetByName(ns.name());
@@ -296,13 +297,13 @@ public final class HeapSession implements AutoCloseable {
                 if (!(that instanceof BitSetAnswer bsa))
                     throw new IllegalArgumentException(
                         "THAT is not a bitset — run CLASS <class> or FROM <name> first");
-                yield bsa.bits().clone();
+                yield (BitSet) bsa.bits().clone();
             }
         };
     }
 
-    private long[] resolveBitSetByName(String name) throws IOException, SQLException {
-        long[] builtin = QueryEngine.buildBuiltinBitSet(heap, registry, name);
+    private BitSet resolveBitSetByName(String name) throws IOException, SQLException {
+        BitSet builtin = QueryEngine.buildBuiltinBitSet(heap, registry, name);
         if (builtin != null) return builtin;
 
         int histId = names.resolve(name)
@@ -314,7 +315,7 @@ public final class HeapSession implements AutoCloseable {
             "'" + name + "' is a table result, not a bitset — use SQL SELECT to query it");
     }
 
-    private long[] applyWhereFilter(long[] bits, DslParser.WhereFilter f, String contextClass)
+    private BitSet applyWhereFilter(BitSet bits, DslParser.WhereFilter f, String contextClass)
             throws IOException {
         if (contextClass == null)
             throw new IllegalArgumentException(
@@ -334,88 +335,73 @@ public final class HeapSession implements AutoCloseable {
         return Long.parseLong(raw);
     }
 
-    private long[] applyFilter(long[] bits, DslParser.Filter filter)
+    private BitSet applyFilter(BitSet bits, DslParser.Filter filter)
             throws IOException, SQLException {
         return switch (filter) {
             case DslParser.InFilter f -> {
-                long[] other = resolveBitSetByName(f.name());
-                long[] result = new long[bits.length];
-                int len = Math.min(bits.length, other.length);
-                for (int i = 0; i < len; i++) result[i] = bits[i] & other[i];
+                BitSet other = resolveBitSetByName(f.name());
+                BitSet result = (BitSet) bits.clone();
+                result.and(other);
                 yield result;
             }
             case DslParser.NotInFilter f -> {
-                long[] other = resolveBitSetByName(f.name());
-                long[] result = bits.clone();
-                int len = Math.min(bits.length, other.length);
-                for (int i = 0; i < len; i++) result[i] &= ~other[i];
+                BitSet other = resolveBitSetByName(f.name());
+                BitSet result = (BitSet) bits.clone();
+                result.andNot(other);
                 yield result;
             }
             case DslParser.RetainedByFilter f -> {
-                long[] retainerBits = resolveBitSetByName(f.name());
-                long[] retained = QueryEngine.buildRetainedByBitSet(heap, registry, retainerBits);
-                long[] result = new long[bits.length];
-                int len = Math.min(bits.length, retained.length);
-                for (int i = 0; i < len; i++) result[i] = bits[i] & retained[i];
+                BitSet retainerBits = resolveBitSetByName(f.name());
+                BitSet retained = QueryEngine.buildRetainedByBitSet(heap, registry, retainerBits);
+                BitSet result = (BitSet) bits.clone();
+                result.and(retained);
                 yield result;
             }
             case DslParser.RetainingFilter f -> {
-                int objectCount = heap.objectCount();
-                long[] result = new long[bits.length];
+                BitSet result = new BitSet(heap.objectCount());
                 try (var retainedSize = registry.openRetainedSize()) {
-                    for (int v = 0; v < objectCount; v++) {
-                        if ((bits[v >>> 6] >>> (v & 63) & 1L) != 0L) {
-                            long rs = retainedSize.readLong(v);
-                            if (matchesOp(rs, f.op(), f.size()))
-                                result[v >>> 6] |= 1L << (v & 63);
-                        }
+                    for (int v = bits.nextSetBit(0); v >= 0; v = bits.nextSetBit(v + 1)) {
+                        long rs = retainedSize.readLong(v);
+                        if (matchesOp(rs, f.op(), f.size())) result.set(v);
                     }
                 }
                 yield result;
             }
             case DslParser.OfTypeFilter f -> {
-                long[] typeBits = QueryEngine.buildOfTypeBitSet(heap, registry, f.className(), f.exactly());
-                long[] result = new long[bits.length];
-                int len = Math.min(bits.length, typeBits.length);
-                for (int i = 0; i < len; i++) result[i] = bits[i] & typeBits[i];
+                BitSet typeBits = QueryEngine.buildOfTypeBitSet(heap, registry, f.className(), f.exactly());
+                BitSet result = (BitSet) bits.clone();
+                result.and(typeBits);
                 yield result;
             }
             case DslParser.SizedFilter f -> {
-                int objectCount = heap.objectCount();
-                long[] result = new long[bits.length];
+                BitSet result = new BitSet(heap.objectCount());
                 try (var shallowSize = registry.openShallowSize()) {
-                    for (int v = 0; v < objectCount; v++) {
-                        if ((bits[v >>> 6] >>> (v & 63) & 1L) != 0L) {
-                            long ss = (long) shallowSize.readInt(v) * 8L;
-                            if (matchesOp(ss, f.op(), f.size()))
-                                result[v >>> 6] |= 1L << (v & 63);
-                        }
+                    for (int v = bits.nextSetBit(0); v >= 0; v = bits.nextSetBit(v + 1)) {
+                        long ss = (long) shallowSize.readInt(v) * 8L;
+                        if (matchesOp(ss, f.op(), f.size())) result.set(v);
                     }
                 }
                 yield result;
             }
             case DslParser.ReferencingFilter f -> {
-                long[] targetBits = resolveBitSetByName(f.name());
-                long[] refing = QueryEngine.buildReferencingBitSet(heap, registry, targetBits);
-                long[] result = new long[bits.length];
-                int len = Math.min(bits.length, refing.length);
-                for (int i = 0; i < len; i++) result[i] = bits[i] & refing[i];
+                BitSet targetBits = resolveBitSetByName(f.name());
+                BitSet refing = QueryEngine.buildReferencingBitSet(heap, registry, targetBits);
+                BitSet result = (BitSet) bits.clone();
+                result.and(refing);
                 yield result;
             }
             case DslParser.ReferencedByFilter f -> {
-                long[] sourceBits = resolveBitSetByName(f.name());
-                long[] refdBy = QueryEngine.buildReferencedByBitSet(heap, registry, sourceBits);
-                long[] result = new long[bits.length];
-                int len = Math.min(bits.length, refdBy.length);
-                for (int i = 0; i < len; i++) result[i] = bits[i] & refdBy[i];
+                BitSet sourceBits = resolveBitSetByName(f.name());
+                BitSet refdBy = QueryEngine.buildReferencedByBitSet(heap, registry, sourceBits);
+                BitSet result = (BitSet) bits.clone();
+                result.and(refdBy);
                 yield result;
             }
             case DslParser.ReachableFromFilter f -> {
-                long[] seedBits = resolveBitSetByName(f.name());
-                long[] reachable = QueryEngine.buildReachableFromBitSet(heap, registry, seedBits);
-                long[] result = new long[bits.length];
-                int len = Math.min(bits.length, reachable.length);
-                for (int i = 0; i < len; i++) result[i] = bits[i] & reachable[i];
+                BitSet seedBits = resolveBitSetByName(f.name());
+                BitSet reachable = QueryEngine.buildReachableFromBitSet(heap, registry, seedBits);
+                BitSet result = (BitSet) bits.clone();
+                result.and(reachable);
                 yield result;
             }
             case DslParser.WhereFilter ignored ->
@@ -436,7 +422,7 @@ public final class HeapSession implements AutoCloseable {
 
     private String executePipeline(DslParser.Pipeline p, int histId)
             throws IOException, SQLException {
-        long[] bits = resolveSource(p.source());
+        BitSet bits = resolveSource(p.source());
 
         String contextClass = switch (p.source()) {
             case DslParser.ClassSource cs -> cs.className().equals("*") ? null : cs.className();
@@ -475,7 +461,7 @@ public final class HeapSession implements AutoCloseable {
                 yield JsonlFormatter.formatTopN(rows);
             }
             case DslParser.AggregateCountTerminal ignored -> {
-                long count = QueryEngine.bitSetCardinality(bits);
+                long count = bits.cardinality();
                 yield "{\"count\":" + count + "}\n";
             }
             case DslParser.AggregateRetainedSizeTerminal t -> {
@@ -487,27 +473,28 @@ public final class HeapSession implements AutoCloseable {
 
     // ── Bitset helpers ────────────────────────────────────────────────────────
 
-    private String displayBitSet(long[] bits) throws IOException {
+    private String displayBitSet(BitSet bits) throws IOException {
         var rows = QueryEngine.topNFromBitSet(heap, registry, bits, IMPLICIT_DISPLAY_N);
         return JsonlFormatter.formatTopN(rows);
     }
 
-    private void saveBitSetToFile(int histId, long[] bits) throws IOException {
+    private void saveBitSetToFile(int histId, BitSet bits) throws IOException {
         Path dir = heap.bitsetsDir();
         Files.createDirectories(dir);
         String filename = UUID.randomUUID() + ".bin";
-        ByteBuffer buf = ByteBuffer.allocate(bits.length * 8).order(ByteOrder.LITTLE_ENDIAN);
-        for (long word : bits) buf.putLong(word);
+        long[] words = bits.toLongArray();
+        ByteBuffer buf = ByteBuffer.allocate(words.length * 8).order(ByteOrder.LITTLE_ENDIAN);
+        for (long word : words) buf.putLong(word);
         Files.write(dir.resolve(filename), buf.array());
         history.setBitsetFile(histId, filename);
     }
 
-    private long[] loadBitSetFromFile(String filename) throws IOException {
+    private BitSet loadBitSetFromFile(String filename) throws IOException {
         byte[] bytes = Files.readAllBytes(heap.bitsetsDir().resolve(filename));
         ByteBuffer buf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
-        long[] bits = new long[bytes.length / 8];
-        for (int i = 0; i < bits.length; i++) bits[i] = buf.getLong();
-        return bits;
+        long[] words = new long[bytes.length / 8];
+        buf.asLongBuffer().get(words);
+        return BitSet.valueOf(words);
     }
 
     private static boolean matchGlob(String name, String glob) {

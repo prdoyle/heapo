@@ -1,4 +1,6 @@
 package heapo.model;
 
-public record BitSetAnswer(long[] bits, int objectCount) implements Answer {
+import java.util.BitSet;
+
+public record BitSetAnswer(BitSet bits, int objectCount) implements Answer {
 }

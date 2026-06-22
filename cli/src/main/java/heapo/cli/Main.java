@@ -14,6 +14,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.sql.SQLException;
+import java.util.BitSet;
 import java.util.List;
 import java.util.concurrent.Callable;
 
@@ -300,17 +301,15 @@ public final class Main implements Runnable {
             }
 
             var cs = (DslParser.ClassSource) p.source();
-            long[] b = QueryEngine.buildBitSet(heap, reg, cs.className());
+            BitSet b = QueryEngine.buildBitSet(heap, reg, cs.className());
             String contextClass = cs.className().equals("*") ? null : cs.className();
 
             for (var filter : p.filters()) {
                 if (filter instanceof DslParser.OfTypeFilter f) contextClass = f.className();
                 if (filter instanceof DslParser.RetainingFilter f) {
-                    int n = heap.objectCount();
-                    long[] result = new long[b.length];
+                    BitSet result = new BitSet(heap.objectCount());
                     try (var rs = reg.openRetainedSize()) {
-                        for (int v = 0; v < n; v++) {
-                            if ((b[v >>> 6] >>> (v & 63) & 1L) == 0L) continue;
+                        for (int v = b.nextSetBit(0); v >= 0; v = b.nextSetBit(v + 1)) {
                             long size = rs.readLong(v);
                             boolean ok = switch (f.op()) {
                                 case ">"  -> size >  f.size();
@@ -320,16 +319,13 @@ public final class Main implements Runnable {
                                 case "="  -> size == f.size();
                                 default   -> false;
                             };
-                            if (ok) result[v >>> 6] |= 1L << (v & 63);
+                            if (ok) result.set(v);
                         }
                     }
                     b = result;
                 } else if (filter instanceof DslParser.OfTypeFilter f) {
-                    long[] typeBits = QueryEngine.buildOfTypeBitSet(heap, reg, f.className(), f.exactly());
-                    long[] result = new long[b.length];
-                    int len = Math.min(b.length, typeBits.length);
-                    for (int i = 0; i < len; i++) result[i] = b[i] & typeBits[i];
-                    b = result;
+                    BitSet typeBits = QueryEngine.buildOfTypeBitSet(heap, reg, f.className(), f.exactly());
+                    b.and(typeBits);
                 } else if (filter instanceof DslParser.WhereFilter f && contextClass != null) {
                     var nameIdx = ClassNameIndex.load(heap);
                     int cid = nameIdx.resolve(contextClass);
@@ -351,7 +347,7 @@ public final class Main implements Runnable {
                 case DslParser.BottomNTerminal t ->
                     JsonlFormatter.formatTopN(QueryEngine.bottomNFromBitSet(heap, reg, b, t.n()));
                 case DslParser.AggregateCountTerminal ignored ->
-                    "{\"count\":" + QueryEngine.bitSetCardinality(b) + "}\n";
+                    "{\"count\":" + b.cardinality() + "}\n";
                 case DslParser.AggregateRetainedSizeTerminal t ->
                     JsonlFormatter.formatAggregateRetainedSize("(pipeline)", t.func(),
                         QueryEngine.aggregateFromBitSet(heap, reg, b, t.func()));
