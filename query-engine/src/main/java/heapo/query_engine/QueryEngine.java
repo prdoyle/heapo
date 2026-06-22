@@ -352,25 +352,35 @@ public final class QueryEngine {
 
     /**
      * Builds a bitset of all instances of {@code className} (or all objects if {@code "*"}).
-     * Bit {@code v} is set iff dense ID {@code v} is in the result set.
+     * {@code className} may contain {@code *} and {@code ?} glob wildcards; if so, the union
+     * of all matching classes' instance lists is returned.
      */
     public static BitSet buildBitSet(UnpackedHeap heap, IndexRegistry registry,
                                       String className) throws IOException {
-        var names        = ClassNameIndex.load(heap);
-        int objectCount  = heap.objectCount();
-        boolean allObjs  = className.equals("*");
-        int classDenseId = allObjs ? -1 : names.resolve(className);
+        var names       = ClassNameIndex.load(heap);
+        int objectCount = heap.objectCount();
+        BitSet bits     = new BitSet(objectCount);
 
-        BitSet bits = new BitSet(objectCount);
-
-        if (allObjs) {
+        if (className.equals("*")) {
             bits.set(0, objectCount);
-        } else {
-            if (classDenseId < 0) return bits; // class not found → empty
-            try (var il = registry.openInstanceList()) {
-                for (long e = il.start(classDenseId), end = il.end(classDenseId); e < end; e++) {
-                    bits.set(il.edge(e));
+            return bits;
+        }
+
+        try (var il = registry.openInstanceList()) {
+            if (containsGlob(className)) {
+                for (String name : names.allDottedNames()) {
+                    if (matchGlob(name, className)) {
+                        int classId = names.resolve(name);
+                        if (classId >= 0)
+                            for (long e = il.start(classId), end = il.end(classId); e < end; e++)
+                                bits.set(il.edge(e));
+                    }
                 }
+            } else {
+                int classDenseId = names.resolve(className);
+                if (classDenseId >= 0)
+                    for (long e = il.start(classDenseId), end = il.end(classDenseId); e < end; e++)
+                        bits.set(il.edge(e));
             }
         }
         return bits;
@@ -389,8 +399,21 @@ public final class QueryEngine {
         if (exactly) return buildBitSet(heap, registry, className);
 
         var names = ClassNameIndex.load(heap);
-        int targetId = names.resolve(className);
-        if (targetId < 0) return new BitSet(heap.objectCount()); // class not found
+
+        // Seed class IDs: exact match or glob expansion
+        var seeds = new HashSet<Integer>();
+        if (containsGlob(className)) {
+            for (String name : names.allDottedNames()) {
+                if (matchGlob(name, className)) {
+                    int id = names.resolve(name);
+                    if (id >= 0) seeds.add(id);
+                }
+            }
+        } else {
+            int id = names.resolve(className);
+            if (id >= 0) seeds.add(id);
+        }
+        if (seeds.isEmpty()) return new BitSet(heap.objectCount());
 
         // Build classId → superclassId map for all known classes
         Map<Integer, Integer> parentOf = new HashMap<>();
@@ -401,9 +424,8 @@ public final class QueryEngine {
             }
         }
 
-        // BFS to collect all subclasses of targetId (including itself)
-        var subclasses = new HashSet<Integer>();
-        subclasses.add(targetId);
+        // BFS: collect all subclasses of any seed (including seeds themselves)
+        var subclasses = new HashSet<>(seeds);
         boolean added = true;
         while (added) {
             added = false;
@@ -696,7 +718,15 @@ public final class QueryEngine {
         return func.equals("MAX") && acc == Long.MIN_VALUE ? 0 : acc;
     }
 
+    private static boolean containsGlob(String s) {
+        return s.indexOf('*') >= 0 || s.indexOf('?') >= 0;
+    }
+
     private static boolean matchGlob(String s, String pattern) {
-        return s.matches(pattern.replace(".", "\\.").replace("*", ".*").replace("?", "."));
+        return s.matches(pattern
+            .replace(".", "\\.")
+            .replace("$", "\\$")
+            .replace("*", ".*")
+            .replace("?", "."));
     }
 }

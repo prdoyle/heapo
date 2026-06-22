@@ -17,7 +17,7 @@ import java.util.List;
  *
  * <p>Calls {@link DslParser#parse} on the tokens before the cursor, then offers
  * the keyword completions returned by the parse result. Completion markers
- * ({@link DslParser#COMPLETE_CLASS}, {@link DslParser#COMPLETE_NAME}) are
+ * ({@link DslParser#COMPLETE_CLASS}, {@link DslParser#COMPLETE_BITSET}) are
  * expanded against live heap / session data.
  */
 final class DslCompleter implements Completer {
@@ -61,7 +61,7 @@ final class DslCompleter implements Completer {
                     } catch (IOException ignored) {}
                     if (matchesPartial("*", partial)) candidates.add(new Candidate("*"));
                 }
-                case DslParser.COMPLETE_NAME -> {
+                case DslParser.COMPLETE_BITSET -> {
                     for (String name : BUILTIN_NAMES)
                         if (matchesPartial(name, partial)) candidates.add(new Candidate(name));
                     for (String name : names.all().keySet())

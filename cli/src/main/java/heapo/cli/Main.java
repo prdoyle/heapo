@@ -52,27 +52,27 @@ public final class Main implements Runnable {
 
         DSL sources (produce a bitset):
           CLASS <class>                           all instances of a class (implicit top 10 display)
-          FROM <name>                             named bitset result
+          FROM <bitset>                           named bitset result
           FROM THAT                               current result
-          Use * as class name for all objects.
+          Use * as class name for all objects; * and ? wildcards are supported in class names.
 
-        Built-in names (usable in FROM / IN / RETAINED BY without CALL THAT):
+        Built-in bitset names (usable anywhere a <bitset> is accepted):
           GcRoots         all GC root objects
           Threads         all java.lang.Thread instances
           ClassLoaders    all java.lang.ClassLoader instances
           SoftReferences / WeakReferences / PhantomReferences
 
         Bitset filters (chain after a source):
-          IN <name>                               bitset AND — keep objects in both sets
-          NOT IN <name>                           bitset AND-NOT — exclude objects in set
-          RETAINED BY <name>                      keep objects dominated by any object in set
+          IN <bitset>                             bitset AND — keep objects in both sets
+          NOT IN <bitset>                         bitset AND-NOT — exclude objects in set
+          RETAINED BY <bitset>                    keep objects dominated by any object in set
           RETAINING > <bytes>                     keep objects whose retained size satisfies comparison (>, >=, <, <=, =)
           OF TYPE <class>                         keep objects of class or any subclass
           OF TYPE EXACTLY <class>                 keep objects of exactly that class
           SIZED > <bytes>                         keep objects whose shallow size satisfies comparison (>, >=, <, <=, =)
-          REFERENCING <name>                      keep objects that directly reference any object in set
-          REFERENCED BY <name>                    keep objects directly referenced by any object in set
-          REACHABLE FROM <name>                   keep objects transitively reachable from any object in set
+          REFERENCING <bitset>                    keep objects that directly reference any object in set
+          REFERENCED BY <bitset>                  keep objects directly referenced by any object in set
+          REACHABLE FROM <bitset>                 keep objects transitively reachable from any object in set
           WHERE <field> <op> <value>              keep objects whose primitive field satisfies comparison (>, >=, <, <=, =)
 
         Output terminals (materialise the bitset into a table):
@@ -97,11 +97,11 @@ public final class Main implements Runnable {
           RETAINED BY i<id> [TOP <n>]             objects retained by i<id>
 
         Session commands:
-          NAMES [MATCHING <glob>]  show named results (optionally filtered)
-          EXPLAIN <name>           show what command produced the named result
+          NAMES [MATCHING <glob>]  show named bitsets (optionally filtered)
+          EXPLAIN <bitset>         show what command produced the named result
           CALL THAT <name>         name the last result (persists a bitset to disk)
           CALL h<id> <name>        name a specific history entry
-          FORGET <name>            remove a name
+          FORGET <bitset>          remove a name
           UNDO                     reverse the last CALL or FORGET
           HISTORY [<n>]            show recent commands (default 10)
 

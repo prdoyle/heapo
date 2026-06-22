@@ -824,6 +824,36 @@ class HeapSessionTest {
         }
     }
 
+    // ── Glob class names ─────────────────────────────────────────────────────
+
+    @Test
+    void classGlobSuffixMatchesSameObjectsAsExactName() throws Exception {
+        Path p = tempRoot.resolve("class-glob-suffix.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            String exactResult = session.execute("CLASS heapo.samples.KnownObjects$Bar COUNT");
+            String globResult  = session.execute("CLASS *KnownObjects$Bar COUNT");
+            assertFalse(globResult.contains("\"error\""), "CLASS glob should succeed: " + globResult);
+            assertEquals(
+                exactResult.replaceAll(".*\"count\":(\\d+).*", "$1").strip(),
+                globResult.replaceAll(".*\"count\":(\\d+).*", "$1").strip(),
+                "Suffix glob should match same count as exact name");
+        }
+    }
+
+    @Test
+    void classGlobPackagePrefixReturnsSubset() throws Exception {
+        Path p = tempRoot.resolve("class-glob-prefix.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            String allResult  = session.execute("CLASS * COUNT");
+            String globResult = session.execute("CLASS heapo.samples.* COUNT");
+            assertFalse(globResult.contains("\"error\""), "CLASS package glob should succeed: " + globResult);
+            long allCount  = Long.parseLong(allResult.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
+            long globCount = Long.parseLong(globResult.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
+            assertTrue(globCount > 0,       "heapo.samples.* should find some objects");
+            assertTrue(globCount <= allCount, "Package glob count must not exceed total");
+        }
+    }
+
     // ── Object ID as single-bit bitset ────────────────────────────────────────
 
     private static int extractDenseId(String jsonl) {

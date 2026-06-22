@@ -33,7 +33,7 @@ public final class DslParser {
     /** The next token should be a fully-qualified class name (or {@code *}). */
     public static final String COMPLETE_CLASS    = "<class>";
     /** The next token should be a named bitset or built-in name. */
-    public static final String COMPLETE_NAME     = "<name>";
+    public static final String COMPLETE_BITSET   = "<bitset>";
     /** The next token should be a new user-chosen name for binding. */
     public static final String COMPLETE_NEW_NAME = "<new-name>";
     /** The next token is a free-form identifier (e.g. field name). */
@@ -167,7 +167,7 @@ public final class DslParser {
     private static ParseResult parseFromPipeline(String[] t, int i) {
         if (i >= t.length) {
             var opts = new ArrayList<>(List.of("THAT"));
-            opts.add(COMPLETE_NAME);
+            opts.add(COMPLETE_BITSET);
             return incomplete(opts);
         }
         Source src = eq(t[i], "THAT") ? new ThatSource() : new NameSource(t[i]);
@@ -190,7 +190,7 @@ public final class DslParser {
 
             if (eq(t[i], "IN")) {
                 i++;
-                if (i >= t.length) return incomplete(List.of(COMPLETE_NAME));
+                if (i >= t.length) return incomplete(List.of(COMPLETE_BITSET));
                 filters.add(new InFilter(t[i++]));
 
             } else if (eq(t[i], "NOT")) {
@@ -198,7 +198,7 @@ public final class DslParser {
                 if (i >= t.length) return incomplete(List.of("IN"));
                 if (!eq(t[i], "IN")) return invalid("Expected IN after NOT, got: " + t[i]);
                 i++;
-                if (i >= t.length) return incomplete(List.of(COMPLETE_NAME));
+                if (i >= t.length) return incomplete(List.of(COMPLETE_BITSET));
                 filters.add(new NotInFilter(t[i++]));
 
             } else if (eq(t[i], "RETAINED")) {
@@ -206,7 +206,7 @@ public final class DslParser {
                 if (i >= t.length) return incomplete(List.of("BY"));
                 if (!eq(t[i], "BY")) return invalid("Expected BY after RETAINED, got: " + t[i]);
                 i++;
-                if (i >= t.length) return incomplete(List.of(COMPLETE_NAME));
+                if (i >= t.length) return incomplete(List.of(COMPLETE_BITSET));
                 filters.add(new RetainedByFilter(t[i++]));
 
             } else if (eq(t[i], "RETAINING")) {
@@ -246,7 +246,7 @@ public final class DslParser {
 
             } else if (eq(t[i], "REFERENCING")) {
                 i++;
-                if (i >= t.length) return incomplete(List.of(COMPLETE_NAME));
+                if (i >= t.length) return incomplete(List.of(COMPLETE_BITSET));
                 filters.add(new ReferencingFilter(t[i++]));
 
             } else if (eq(t[i], "REFERENCED")) {
@@ -254,7 +254,7 @@ public final class DslParser {
                 if (i >= t.length) return incomplete(List.of("BY"));
                 if (!eq(t[i], "BY")) return invalid("Expected BY after REFERENCED, got: " + t[i]);
                 i++;
-                if (i >= t.length) return incomplete(List.of(COMPLETE_NAME));
+                if (i >= t.length) return incomplete(List.of(COMPLETE_BITSET));
                 filters.add(new ReferencedByFilter(t[i++]));
 
             } else if (eq(t[i], "REACHABLE")) {
@@ -262,7 +262,7 @@ public final class DslParser {
                 if (i >= t.length) return incomplete(List.of("FROM"));
                 if (!eq(t[i], "FROM")) return invalid("Expected FROM after REACHABLE, got: " + t[i]);
                 i++;
-                if (i >= t.length) return incomplete(List.of(COMPLETE_NAME));
+                if (i >= t.length) return incomplete(List.of(COMPLETE_BITSET));
                 filters.add(new ReachableFromFilter(t[i++]));
 
             } else if (eq(t[i], "WHERE")) {
@@ -349,7 +349,7 @@ public final class DslParser {
     }
 
     private static ParseResult parseExplain(String[] t, int i) {
-        if (i >= t.length) return incomplete(List.of("i<n>", COMPLETE_NAME));
+        if (i >= t.length) return incomplete(List.of("i<n>", COMPLETE_BITSET));
         String arg = t[i];
         if (isObjRef(arg)) {
             int denseId = Integer.parseInt(arg.substring(1));
@@ -417,7 +417,7 @@ public final class DslParser {
     }
 
     private static ParseResult parseForget(String[] t, int i) {
-        if (i >= t.length) return incomplete(List.of(COMPLETE_NAME));
+        if (i >= t.length) return incomplete(List.of(COMPLETE_BITSET));
         String name = t[i++];
         if (i < t.length) return invalid("Unexpected tokens after FORGET " + name);
         return complete(new ForgetQuery(name), List.of());
