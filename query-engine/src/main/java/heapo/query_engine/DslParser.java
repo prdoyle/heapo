@@ -94,7 +94,8 @@ public final class DslParser {
 
     private static final List<String> TOP_LEVEL = List.of(
         "CLASS", "FROM", "TOP", "BOTTOM", "CLASSES", "EXPLAIN", "RETAINED", "STATUS",
-        "NAMES", "THAT", "UNDO", "HISTORY", "CALL", "FORGET"
+        "NAMES", "THAT", "UNDO", "HISTORY", "CALL", "FORGET",
+        "REFERENCING", "REFERENCED", "REACHABLE"
     );
 
     private static final List<String> FILTER_KEYWORDS = List.of(
