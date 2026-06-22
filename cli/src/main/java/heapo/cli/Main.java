@@ -207,7 +207,7 @@ public final class Main implements Runnable {
         Path hprofFile;
 
         @Parameters(index = "1..*", arity = "1..*",
-                    description = "Query tokens (e.g. ALL * TOP 20 BY retainedSize)")
+                    description = "Query tokens (e.g. CLASS * TOP 20 BY retainedSize)")
         List<String> queryTokens;
 
         @Option(names = {"-d", "--heap-dir"},
@@ -229,114 +229,20 @@ public final class Main implements Runnable {
 
             String queryStr = String.join(" ", queryTokens);
 
-            DslParser.Query parsed;
-            try {
-                parsed = DslParser.parse(queryStr);
-            } catch (IllegalArgumentException e) {
-                System.err.println("Error: " + e.getMessage());
-                return 1;
-            }
-
-            String jsonl = switch (parsed) {
-                case DslParser.Pipeline p -> {
-                    boolean hasSessionFilter = p.filters().stream().anyMatch(
-                        f -> f instanceof DslParser.InFilter
-                          || f instanceof DslParser.NotInFilter
-                          || f instanceof DslParser.RetainedByFilter);
-                    if (p.source() instanceof DslParser.NameSource
-                            || p.source() instanceof DslParser.ThatSource
-                            || hasSessionFilter) {
-                        System.err.println(
-                            "Error: name/THAT resolution requires a session — use 'heapo open'");
-                        yield null;
-                    }
-                    var cs   = (DslParser.ClassSource) p.source();
-                    long[] b = QueryEngine.buildBitSet(heap, reg, cs.className());
-                    String contextClass = cs.className().equals("*") ? null : cs.className();
-                    // Apply session-independent filters
-                    for (var filter : p.filters()) {
-                        if (filter instanceof DslParser.OfTypeFilter f) contextClass = f.className();
-                        if (filter instanceof DslParser.RetainingFilter f) {
-                            int objectCount = heap.objectCount();
-                            long[] result = new long[b.length];
-                            try (var retainedSize = reg.openRetainedSize()) {
-                                for (int v = 0; v < objectCount; v++) {
-                                    if ((b[v >>> 6] >>> (v & 63) & 1L) != 0L) {
-                                        long rs = retainedSize.readLong(v);
-                                        boolean matches = switch (f.op()) {
-                                            case ">"  -> rs >  f.size();
-                                            case ">=" -> rs >= f.size();
-                                            case "<"  -> rs <  f.size();
-                                            case "<=" -> rs <= f.size();
-                                            case "="  -> rs == f.size();
-                                            default   -> false;
-                                        };
-                                        if (matches) result[v >>> 6] |= 1L << (v & 63);
-                                    }
-                                }
-                            }
-                            b = result;
-                        } else if (filter instanceof DslParser.OfTypeFilter f) {
-                            long[] typeBits = QueryEngine.buildOfTypeBitSet(heap, reg, f.className(), f.exactly());
-                            long[] result = new long[b.length];
-                            int len = Math.min(b.length, typeBits.length);
-                            for (int i = 0; i < len; i++) result[i] = b[i] & typeBits[i];
-                            b = result;
-                        } else if (filter instanceof DslParser.WhereFilter f) {
-                            if (contextClass != null) {
-                                var names = ClassNameIndex.load(heap);
-                                int cid   = names.resolve(contextClass);
-                                if (cid >= 0) {
-                                    long val = f.rawValue().equalsIgnoreCase("true")  ? 1L
-                                             : f.rawValue().equalsIgnoreCase("false") ? 0L
-                                             : Long.parseLong(f.rawValue());
-                                    b = QueryEngine.buildWhereFilterBitSet(heap, reg, b, cid,
-                                            f.fieldName(), f.op(), val);
-                                }
-                            }
-                        }
-                    }
-                    yield switch (p.terminal()) {
-                        case null                                       ->
-                            JsonlFormatter.formatTopN(QueryEngine.topNFromBitSet(heap, reg, b, 10));
-                        case DslParser.TopNTerminal t                   ->
-                            JsonlFormatter.formatTopN(QueryEngine.topNFromBitSet(heap, reg, b, t.n()));
-                        case DslParser.BottomNTerminal t                ->
-                            JsonlFormatter.formatTopN(QueryEngine.bottomNFromBitSet(heap, reg, b, t.n()));
-                        case DslParser.AggregateCountTerminal ignored   ->
-                            "{\"count\":" + QueryEngine.bitSetCardinality(b) + "}\n";
-                        case DslParser.AggregateRetainedSizeTerminal t  ->
-                            JsonlFormatter.formatAggregateRetainedSize(
-                                "(pipeline)", t.func(),
-                                QueryEngine.aggregateFromBitSet(heap, reg, b, t.func()));
-                    };
+            String jsonl = switch (DslParser.parse(queryStr)) {
+                case DslParser.Invalid e -> {
+                    System.err.println("Error: " + e.message());
+                    yield null;
                 }
-                case DslParser.AllSource q -> {
-                    long[] bits = QueryEngine.buildBitSet(heap, reg, q.className());
-                    yield JsonlFormatter.formatTopN(QueryEngine.topNFromBitSet(heap, reg, bits, 10));
+                case DslParser.Incomplete i -> {
+                    System.err.println("Error: incomplete query; expected: "
+                        + String.join(", ", i.completions()));
+                    yield null;
                 }
-                case DslParser.AllTopByRetainedSize q ->
-                    JsonlFormatter.formatTopN(QueryEngine.allTopByRetainedSize(heap, reg, q.className(), q.n()));
-                case DslParser.AllBottomByRetainedSize q ->
-                    JsonlFormatter.formatTopN(QueryEngine.allBottomByRetainedSize(heap, reg, q.className(), q.n()));
-                case DslParser.AllRetaining q ->
-                    JsonlFormatter.formatTopN(QueryEngine.allRetaining(heap, reg, q.className(), q.op(), q.size()));
-                case DslParser.AggregateCount q ->
-                    JsonlFormatter.formatCount(q.className(), QueryEngine.aggregateCount(heap, reg, q.className()));
-                case DslParser.AggregateRetainedSize q ->
-                    JsonlFormatter.formatAggregateRetainedSize(q.className(), q.func(),
-                        QueryEngine.aggregateRetainedSize(heap, reg, q.className(), q.func()));
-                case DslParser.ClassesQuery q ->
-                    JsonlFormatter.formatClasses(QueryEngine.classes(heap, reg, q.glob()));
-                case DslParser.ExplainQuery q ->
-                    JsonlFormatter.formatExplain(QueryEngine.explain(heap, reg, q.denseId()));
-                case DslParser.DominatorSubtree q ->
-                    JsonlFormatter.formatTopN(QueryEngine.dominatorSubtree(heap, reg, q.denseId(), q.topN()));
-                case DslParser.StatusQuery ignored ->
-                    "{\"objectCount\":" + heap.objectCount() + ",\"classCount\":" + heap.classCount() + "}\n";
+                case DslParser.Complete c -> executeQueryCommand(c.action(), heap, reg);
             };
 
-            if (jsonl == null) return 1; // error already printed
+            if (jsonl == null) return 1;
 
             OutputFormatter.Format fmt;
             try {
@@ -347,6 +253,109 @@ public final class Main implements Runnable {
             }
             System.out.print(OutputFormatter.convert(jsonl, fmt));
             return 0;
+        }
+
+        private static String executeQueryCommand(DslParser.Query q,
+                                                   UnpackedHeap heap,
+                                                   IndexRegistry reg) throws IOException {
+            return switch (q) {
+                case DslParser.StatusQuery ignored ->
+                    "{\"objectCount\":" + heap.objectCount()
+                        + ",\"classCount\":" + heap.classCount() + "}\n";
+
+                case DslParser.ClassesQuery cq ->
+                    JsonlFormatter.formatClasses(QueryEngine.classes(heap, reg, cq.glob()));
+
+                case DslParser.ExplainQuery eq ->
+                    JsonlFormatter.formatExplain(QueryEngine.explain(heap, reg, eq.denseId()));
+
+                case DslParser.DominatorSubtree ds ->
+                    JsonlFormatter.formatTopN(
+                        QueryEngine.dominatorSubtree(heap, reg, ds.denseId(), ds.topN()));
+
+                case DslParser.Pipeline p -> executePipelineQuery(p, heap, reg);
+
+                default -> {
+                    System.err.println(
+                        "Error: '" + q.getClass().getSimpleName()
+                            + "' requires a session — use 'heapo open'");
+                    yield null;
+                }
+            };
+        }
+
+        private static String executePipelineQuery(DslParser.Pipeline p,
+                                                    UnpackedHeap heap,
+                                                    IndexRegistry reg) throws IOException {
+            boolean hasSessionDep = p.source() instanceof DslParser.NameSource
+                || p.source() instanceof DslParser.ThatSource
+                || p.filters().stream().anyMatch(
+                    f -> f instanceof DslParser.InFilter
+                      || f instanceof DslParser.NotInFilter
+                      || f instanceof DslParser.RetainedByFilter);
+            if (hasSessionDep) {
+                System.err.println(
+                    "Error: name/THAT resolution requires a session — use 'heapo open'");
+                return null;
+            }
+
+            var cs = (DslParser.ClassSource) p.source();
+            long[] b = QueryEngine.buildBitSet(heap, reg, cs.className());
+            String contextClass = cs.className().equals("*") ? null : cs.className();
+
+            for (var filter : p.filters()) {
+                if (filter instanceof DslParser.OfTypeFilter f) contextClass = f.className();
+                if (filter instanceof DslParser.RetainingFilter f) {
+                    int n = heap.objectCount();
+                    long[] result = new long[b.length];
+                    try (var rs = reg.openRetainedSize()) {
+                        for (int v = 0; v < n; v++) {
+                            if ((b[v >>> 6] >>> (v & 63) & 1L) == 0L) continue;
+                            long size = rs.readLong(v);
+                            boolean ok = switch (f.op()) {
+                                case ">"  -> size >  f.size();
+                                case ">=" -> size >= f.size();
+                                case "<"  -> size <  f.size();
+                                case "<=" -> size <= f.size();
+                                case "="  -> size == f.size();
+                                default   -> false;
+                            };
+                            if (ok) result[v >>> 6] |= 1L << (v & 63);
+                        }
+                    }
+                    b = result;
+                } else if (filter instanceof DslParser.OfTypeFilter f) {
+                    long[] typeBits = QueryEngine.buildOfTypeBitSet(heap, reg, f.className(), f.exactly());
+                    long[] result = new long[b.length];
+                    int len = Math.min(b.length, typeBits.length);
+                    for (int i = 0; i < len; i++) result[i] = b[i] & typeBits[i];
+                    b = result;
+                } else if (filter instanceof DslParser.WhereFilter f && contextClass != null) {
+                    var nameIdx = ClassNameIndex.load(heap);
+                    int cid = nameIdx.resolve(contextClass);
+                    if (cid >= 0) {
+                        long val = f.rawValue().equalsIgnoreCase("true")  ? 1L
+                                 : f.rawValue().equalsIgnoreCase("false") ? 0L
+                                 : Long.parseLong(f.rawValue());
+                        b = QueryEngine.buildWhereFilterBitSet(heap, reg, b, cid,
+                                f.field(), f.op(), val);
+                    }
+                }
+            }
+
+            return switch (p.terminal()) {
+                case null ->
+                    JsonlFormatter.formatTopN(QueryEngine.topNFromBitSet(heap, reg, b, 10));
+                case DslParser.TopNTerminal t ->
+                    JsonlFormatter.formatTopN(QueryEngine.topNFromBitSet(heap, reg, b, t.n()));
+                case DslParser.BottomNTerminal t ->
+                    JsonlFormatter.formatTopN(QueryEngine.bottomNFromBitSet(heap, reg, b, t.n()));
+                case DslParser.AggregateCountTerminal ignored ->
+                    "{\"count\":" + QueryEngine.bitSetCardinality(b) + "}\n";
+                case DslParser.AggregateRetainedSizeTerminal t ->
+                    JsonlFormatter.formatAggregateRetainedSize("(pipeline)", t.func(),
+                        QueryEngine.aggregateFromBitSet(heap, reg, b, t.func()));
+            };
         }
     }
 

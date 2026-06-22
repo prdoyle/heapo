@@ -27,20 +27,126 @@ class QueryEngineTest {
         knownReg.buildAll();
     }
 
+    // ── Parser tests ──────────────────────────────────────────────────────────
+
     @Test
-    void parserAcceptsAllTopBySyntax() {
-        var q = DslParser.parse("ALL heapo.samples.KnownObjects$Bar TOP 1 BY retainedSize");
-        assertInstanceOf(DslParser.AllTopByRetainedSize.class, q);
-        var atq = (DslParser.AllTopByRetainedSize) q;
-        assertEquals("heapo.samples.KnownObjects$Bar", atq.className());
-        assertEquals(1, atq.n());
+    void parserAcceptsClassTopBySyntax() {
+        var result = DslParser.parse("CLASS heapo.samples.KnownObjects$Bar TOP 1 BY retainedSize");
+        assertInstanceOf(DslParser.Complete.class, result);
+        var action = ((DslParser.Complete) result).action();
+        assertInstanceOf(DslParser.Pipeline.class, action);
+        var p = (DslParser.Pipeline) action;
+        assertEquals("heapo.samples.KnownObjects$Bar",
+            ((DslParser.ClassSource) p.source()).className());
+        assertInstanceOf(DslParser.TopNTerminal.class, p.terminal());
+        assertEquals(1, ((DslParser.TopNTerminal) p.terminal()).n());
     }
 
     @Test
     void parserRejectsUnknownSyntax() {
-        assertThrows(IllegalArgumentException.class,
-            () -> DslParser.parse("SELECT * FROM foo"));
+        var result = DslParser.parse("SELECT * FROM foo");
+        assertInstanceOf(DslParser.Invalid.class, result);
     }
+
+    @Test
+    void parserAggregateCount() {
+        var result = DslParser.parse("CLASS heapo.samples.Foo COUNT");
+        assertInstanceOf(DslParser.Complete.class, result);
+        var action = ((DslParser.Complete) result).action();
+        assertInstanceOf(DslParser.Pipeline.class, action);
+        var p = (DslParser.Pipeline) action;
+        assertEquals("heapo.samples.Foo", ((DslParser.ClassSource) p.source()).className());
+        assertInstanceOf(DslParser.AggregateCountTerminal.class, p.terminal());
+    }
+
+    @Test
+    void parserClassesAll() {
+        var result = DslParser.parse("CLASSES");
+        assertInstanceOf(DslParser.Complete.class, result);
+        var action = ((DslParser.Complete) result).action();
+        assertInstanceOf(DslParser.ClassesQuery.class, action);
+        assertNull(((DslParser.ClassesQuery) action).glob());
+    }
+
+    @Test
+    void parserClassesMatching() {
+        var result = DslParser.parse("CLASSES MATCHING heapo.*");
+        assertInstanceOf(DslParser.Complete.class, result);
+        var action = ((DslParser.Complete) result).action();
+        assertInstanceOf(DslParser.ClassesQuery.class, action);
+        assertEquals("heapo.*", ((DslParser.ClassesQuery) action).glob());
+    }
+
+    @Test
+    void parserExplain() {
+        var result = DslParser.parse("EXPLAIN i42");
+        assertInstanceOf(DslParser.Complete.class, result);
+        var action = ((DslParser.Complete) result).action();
+        assertInstanceOf(DslParser.ExplainQuery.class, action);
+        assertEquals(42, ((DslParser.ExplainQuery) action).denseId());
+    }
+
+    @Test
+    void parserStatus() {
+        var result = DslParser.parse("STATUS");
+        assertInstanceOf(DslParser.Complete.class, result);
+        assertInstanceOf(DslParser.StatusQuery.class, ((DslParser.Complete) result).action());
+    }
+
+    @Test
+    void parserEmptyReturnsIncomplete() {
+        var result = DslParser.parse("");
+        assertInstanceOf(DslParser.Incomplete.class, result);
+        assertFalse(((DslParser.Incomplete) result).completions().isEmpty());
+    }
+
+    @Test
+    void parserIncompleteClassReturnsCompletions() {
+        var result = DslParser.parse("CLASS");
+        assertInstanceOf(DslParser.Incomplete.class, result);
+    }
+
+    @Test
+    void parserPipelineWithFilter() {
+        var result = DslParser.parse("CLASS com.example.Foo IN mySet TOP 10");
+        assertInstanceOf(DslParser.Complete.class, result);
+        var p = (DslParser.Pipeline) ((DslParser.Complete) result).action();
+        assertEquals(1, p.filters().size());
+        assertInstanceOf(DslParser.InFilter.class, p.filters().get(0));
+        assertEquals("mySet", ((DslParser.InFilter) p.filters().get(0)).name());
+        assertInstanceOf(DslParser.TopNTerminal.class, p.terminal());
+    }
+
+    @Test
+    void parserTopStandaloneExpandsToClassStar() {
+        var result = DslParser.parse("TOP 5 BY retainedSize");
+        assertInstanceOf(DslParser.Complete.class, result);
+        var p = (DslParser.Pipeline) ((DslParser.Complete) result).action();
+        assertEquals("*", ((DslParser.ClassSource) p.source()).className());
+        assertEquals(5, ((DslParser.TopNTerminal) p.terminal()).n());
+    }
+
+    @Test
+    void parserSessionCommands() {
+        assertInstanceOf(DslParser.StatusQuery.class,
+            ((DslParser.Complete) DslParser.parse("STATUS")).action());
+        assertInstanceOf(DslParser.NamesQuery.class,
+            ((DslParser.Complete) DslParser.parse("NAMES")).action());
+        assertInstanceOf(DslParser.ThatQuery.class,
+            ((DslParser.Complete) DslParser.parse("THAT")).action());
+        assertInstanceOf(DslParser.UndoQuery.class,
+            ((DslParser.Complete) DslParser.parse("UNDO")).action());
+        assertInstanceOf(DslParser.ForgetQuery.class,
+            ((DslParser.Complete) DslParser.parse("FORGET mySet")).action());
+        assertInstanceOf(DslParser.CallThatQuery.class,
+            ((DslParser.Complete) DslParser.parse("CALL THAT myName")).action());
+        assertInstanceOf(DslParser.HistoryRecallQuery.class,
+            ((DslParser.Complete) DslParser.parse("h7")).action());
+        assertEquals(7, ((DslParser.HistoryRecallQuery)
+            ((DslParser.Complete) DslParser.parse("h7")).action()).histId());
+    }
+
+    // ── Engine tests ──────────────────────────────────────────────────────────
 
     @Test
     void allBarTop1ReturnsSingleRow() throws Exception {
@@ -56,7 +162,6 @@ class QueryEngineTest {
 
     @Test
     void allBarTop1RetainedSizeIncludesFooObjects() throws Exception {
-        // bar1 → foo1 → foo2, so bar1 retains foo1 and foo2
         List<TopNRow> barRows = QueryEngine.allTopByRetainedSize(
             knownHeap, knownReg, "heapo.samples.KnownObjects$Bar", 1);
         List<TopNRow> fooRows = QueryEngine.allTopByRetainedSize(
@@ -78,7 +183,7 @@ class QueryEngineTest {
         assertTrue(jsonl.contains("\"type\":\"heapo.samples.KnownObjects$Bar\""), "JSONL must contain type");
         assertTrue(jsonl.contains("\"retainedSize\":"), "JSONL must contain retainedSize");
         assertTrue(jsonl.contains("\"shallowSize\":"), "JSONL must contain shallowSize");
-        assertTrue(jsonl.contains("\"id\":\"#"), "JSONL must contain id");
+        assertTrue(jsonl.contains("\"id\":\"i"), "JSONL must contain id with i prefix");
     }
 
     @Test
@@ -86,13 +191,10 @@ class QueryEngineTest {
         List<TopNRow> rows = QueryEngine.allTopByRetainedSize(
             knownHeap, knownReg, "*", 5);
         assertTrue(rows.size() <= 5 && rows.size() > 0, "Expected 1-5 results");
-        // Verify ranks are in order
         for (int i = 0; i < rows.size(); i++) {
             assertEquals(i + 1, rows.get(i).rank());
         }
     }
-
-    // ── Phase 6: AGGREGATE COUNT ──────────────────────────────────────────────
 
     @Test
     void aggregateCountFooReturnsExpectedCount() throws Exception {
@@ -113,8 +215,6 @@ class QueryEngineTest {
             "heapo.samples.NonExistentClass");
         assertEquals(0, count);
     }
-
-    // ── Phase 6: CLASSES ──────────────────────────────────────────────────────
 
     @Test
     void classesListsAllClasses() throws Exception {
@@ -144,11 +244,8 @@ class QueryEngineTest {
         }
     }
 
-    // ── Phase 6: EXPLAIN ─────────────────────────────────────────────────────
-
     @Test
     void explainReturnsPathToRoot() throws Exception {
-        // Find a Foo instance
         var fooRows = QueryEngine.allTopByRetainedSize(
             knownHeap, knownReg, "heapo.samples.KnownObjects$Foo", 1);
         assertFalse(fooRows.isEmpty(), "Should find at least one Foo");
@@ -158,45 +255,8 @@ class QueryEngineTest {
         assertFalse(path.isEmpty(), "Explain path should not be empty");
         assertEquals(fooDenseId, path.get(0).denseId(), "First node should be the queried object");
         assertEquals(0, path.get(0).depth(), "Root depth should be 0");
-        // Depths should be monotonically increasing
         for (int i = 0; i + 1 < path.size(); i++) {
             assertEquals(i + 1, path.get(i + 1).depth());
         }
-    }
-
-    // ── Phase 6: DslParser extensions ────────────────────────────────────────
-
-    @Test
-    void parserAggregateCount() {
-        var q = DslParser.parse("ALL heapo.samples.Foo AGGREGATE COUNT");
-        assertInstanceOf(DslParser.AggregateCount.class, q);
-        assertEquals("heapo.samples.Foo", ((DslParser.AggregateCount) q).className());
-    }
-
-    @Test
-    void parserClassesAll() {
-        var q = DslParser.parse("CLASSES");
-        assertInstanceOf(DslParser.ClassesQuery.class, q);
-        assertNull(((DslParser.ClassesQuery) q).glob());
-    }
-
-    @Test
-    void parserClassesMatching() {
-        var q = DslParser.parse("CLASSES MATCHING heapo.*");
-        assertInstanceOf(DslParser.ClassesQuery.class, q);
-        assertEquals("heapo.*", ((DslParser.ClassesQuery) q).glob());
-    }
-
-    @Test
-    void parserExplain() {
-        var q = DslParser.parse("EXPLAIN #42");
-        assertInstanceOf(DslParser.ExplainQuery.class, q);
-        assertEquals(42, ((DslParser.ExplainQuery) q).denseId());
-    }
-
-    @Test
-    void parserStatus() {
-        var q = DslParser.parse("STATUS");
-        assertInstanceOf(DslParser.StatusQuery.class, q);
     }
 }

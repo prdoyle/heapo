@@ -31,7 +31,7 @@ public final class HeapSession implements AutoCloseable {
     private final SqlRouter       sql;
 
     private Answer that    = VoidAnswer.INSTANCE;
-    private int thatHistId = -1;  // history ID of the command that last set `that`
+    private int thatHistId = -1;
 
     private static final int IMPLICIT_DISPLAY_N = 10;
 
@@ -49,37 +49,26 @@ public final class HeapSession implements AutoCloseable {
     // ── Command dispatch ──────────────────────────────────────────────────────
 
     /**
-     * Execute a command line.  Returns JSONL output (may be empty for void commands).
+     * Execute a command line. Returns JSONL output (may be empty for void commands).
      */
     public String execute(String command) throws IOException, SQLException {
         String trimmed = command.strip();
         if (trimmed.isEmpty()) return "";
 
-        // ── Session commands ──────────────────────────────────────────────────
-        if (trimmed.matches("(?i)NAMES(\\s+MATCHING\\s+\\S+)?")) return handleNames(trimmed);
-        if (trimmed.matches("(?i)EXPLAIN\\s+\\S+") && !trimmed.split("\\s+")[1].matches("i\\d+"))
-            return handleExplainName(trimmed.split("\\s+")[1]);
-        if (trimmed.equalsIgnoreCase("THAT")) {
-            if (that instanceof VoidAnswer)    return "{\"error\":\"THAT is empty\"}\n";
-            if (that instanceof BitSetAnswer b) return displayBitSet(b.bits());
-            if (that instanceof TableAnswer t)  return sql.selectAsJsonl(t.sqlTableName());
-            return "{\"error\":\"cannot display THAT\"}\n";
-        }
-        if (trimmed.equalsIgnoreCase("UNDO"))  return handleUndo();
-        if (trimmed.matches("h\\d+"))           return handleRecall(Integer.parseInt(trimmed.substring(1)));
-        if (trimmed.matches("(?i)HISTORY(\\s+\\d+)?")) return handleHistory(trimmed);
-        if (trimmed.matches("(?i)CALL\\s+THAT\\s+\\S+")) return handleCallThat(trimmed);
-        if (trimmed.matches("(?i)CALL\\s+h\\d+\\s+\\S+")) return handleCallById(trimmed);
-        if (trimmed.matches("(?i)FORGET\\s+\\S+")) return handleForget(trimmed);
-
-        // ── SQL query ─────────────────────────────────────────────────────────
         if (SqlRouter.isSql(trimmed)) return handleSql(trimmed);
 
-        // ── DSL query ─────────────────────────────────────────────────────────
-        return handleQuery(trimmed);
+        return switch (DslParser.parse(trimmed)) {
+            case DslParser.Invalid e ->
+                "{\"error\":\"" + escJson(e.message()) + "\"}\n";
+            case DslParser.Incomplete i ->
+                "{\"error\":\"" + escJson("Incomplete command; expected: "
+                    + String.join(", ", i.completions())) + "\"}\n";
+            case DslParser.Complete c ->
+                handleComplete(c.action(), trimmed);
+        };
     }
 
-    public Answer getThat()         { return that;  }
+    public Answer getThat()         { return that; }
     public NamesManager names()     { return names; }
     public void clearSession()      { db.truncateSession(); }
 
@@ -93,15 +82,64 @@ public final class HeapSession implements AutoCloseable {
         };
     }
 
+    // ── Query dispatch ────────────────────────────────────────────────────────
+
+    private String handleComplete(DslParser.Query q, String rawCmd)
+            throws IOException, SQLException {
+        return switch (q) {
+            // Read-only session commands — not recorded in history
+            case DslParser.NamesQuery nq         -> handleNames(nq.glob());
+            case DslParser.ThatQuery ignored     -> handleThat();
+            case DslParser.HistoryQuery hq       -> handleHistory(hq.limit());
+            case DslParser.HistoryRecallQuery hr -> handleRecall(hr.histId());
+            case DslParser.ExplainNameQuery en   -> handleExplainName(en.name());
+
+            // Read-only DSL queries — recorded in history, no THAT side-effect
+            case DslParser.StatusQuery ignored -> {
+                history.record(rawCmd, System.currentTimeMillis());
+                yield "{\"objectCount\":" + heap.objectCount()
+                    + ",\"classCount\":" + heap.classCount() + "}\n";
+            }
+            case DslParser.ClassesQuery cq -> {
+                history.record(rawCmd, System.currentTimeMillis());
+                yield JsonlFormatter.formatClasses(QueryEngine.classes(heap, registry, cq.glob()));
+            }
+            case DslParser.ExplainQuery eq -> {
+                history.record(rawCmd, System.currentTimeMillis());
+                yield JsonlFormatter.formatExplain(QueryEngine.explain(heap, registry, eq.denseId()));
+            }
+
+            // Mutating session commands — record themselves internally
+            case DslParser.UndoQuery ignored        -> handleUndo();
+            case DslParser.CallThatQuery ct         -> handleCallThat(ct.name(), rawCmd);
+            case DslParser.CallByIdQuery cb         -> handleCallById(cb.histId(), cb.name(), rawCmd);
+            case DslParser.ForgetQuery fq           -> handleForget(fq.name(), rawCmd);
+
+            // DSL pipeline — recorded before execution, updates THAT
+            case DslParser.Pipeline p -> {
+                int histId = history.record(rawCmd, System.currentTimeMillis());
+                yield executePipeline(p, histId);
+            }
+            case DslParser.DominatorSubtree ds -> {
+                int histId = history.record(rawCmd, System.currentTimeMillis());
+                List<TopNRow> rows =
+                    QueryEngine.dominatorSubtree(heap, registry, ds.denseId(), ds.topN());
+                String tableName = tables.writeTopNResult(rows);
+                history.setSqlTable(histId, tableName);
+                that = new TableAnswer(tableName, rows.size());
+                thatHistId = histId;
+                yield JsonlFormatter.formatTopN(rows);
+            }
+        };
+    }
+
     // ── Session command handlers ──────────────────────────────────────────────
 
-    private String handleNames(String cmd) {
-        String[] parts = cmd.strip().split("\\s+");
-        String glob = parts.length >= 3 && parts[1].equalsIgnoreCase("MATCHING") ? parts[2] : null;
+    private String handleNames(String glob) {
         var all = names.all();
         var sb = new StringBuilder();
         for (var e : all.entrySet()) {
-            if (glob == null || matchNameGlob(e.getKey(), glob)) {
+            if (glob == null || matchGlob(e.getKey(), glob)) {
                 sb.append("{\"name\":\"").append(escJson(e.getKey()))
                   .append("\",\"historyId\":").append(e.getValue()).append("}\n");
             }
@@ -116,7 +154,7 @@ public final class HeapSession implements AutoCloseable {
         int histId = histIdOpt.get();
         var entryOpt = history.findById(histId);
         if (entryOpt.isEmpty())
-            return "{\"error\":\"History @" + histId + " not found\"}\n";
+            return "{\"error\":\"History h" + histId + " not found\"}\n";
         var entry = entryOpt.get();
         String type = entry.bitsetFile() != null ? "bitset"
                     : entry.sqlTable() != null   ? "table"
@@ -126,21 +164,20 @@ public final class HeapSession implements AutoCloseable {
           .append(",\"histId\":\"h").append(histId).append('"')
           .append(",\"type\":\"").append(type).append('"')
           .append(",\"command\":\"").append(escJson(entry.command())).append('"');
-        if (entry.input1() != null) sb.append(",\"derivedFrom\":\"@").append(entry.input1()).append('"');
+        if (entry.input1() != null) sb.append(",\"derivedFrom\":\"h").append(entry.input1()).append('"');
         sb.append("}\n");
         return sb.toString();
     }
 
-    private static boolean matchNameGlob(String name, String glob) {
-        return name.matches(glob.replace(".", "\\.").replace("*", ".*").replace("?", "."));
+    private String handleThat() throws IOException {
+        if (that instanceof VoidAnswer)    return "{\"error\":\"THAT is empty\"}\n";
+        if (that instanceof BitSetAnswer b) return displayBitSet(b.bits());
+        if (that instanceof TableAnswer t)  return sql.selectAsJsonl(t.sqlTableName());
+        return "{\"error\":\"cannot display THAT\"}\n";
     }
 
-    private String handleHistory(String cmd) {
-        int n = 10;
-        String[] parts = cmd.split("\\s+");
-        if (parts.length >= 2) n = Integer.parseInt(parts[1]);
-
-        var entries = history.recent(n);
+    private String handleHistory(int limit) {
+        var entries = history.recent(limit);
         var sb = new StringBuilder();
         for (var e : entries) {
             sb.append("{\"id\":\"h").append(e.id()).append('"')
@@ -153,13 +190,11 @@ public final class HeapSession implements AutoCloseable {
         return sb.toString();
     }
 
-    private String handleCallThat(String cmd) throws IOException, SQLException {
-        String name = cmd.split("\\s+")[2];
+    private String handleCallThat(String name, String rawCmd) throws IOException, SQLException {
         if (that instanceof VoidAnswer) return "{\"error\":\"THAT is empty\"}\n";
 
         int histId = thatHistId;
 
-        // Persist in-memory BitSetAnswer to disk before binding a name to it
         if (that instanceof BitSetAnswer bsa) {
             var entry = history.findById(histId);
             if (entry.isPresent() && entry.get().bitsetFile() == null) {
@@ -168,30 +203,22 @@ public final class HeapSession implements AutoCloseable {
         }
 
         var displaced = names.bind(name, histId);
-        int callId    = history.record(cmd, System.currentTimeMillis());
+        int callId    = history.record(rawCmd, System.currentTimeMillis());
         history.setInputs(callId, histId, displaced.orElse(null));
         return "{\"bound\":\"" + escJson(name) + "\",\"historyId\":" + histId + "}\n";
     }
 
-    private String handleCallById(String cmd) throws SQLException {
-        String[] parts = cmd.split("\\s+");
-        String ref = parts[1];
-        if (!ref.matches("h\\d+"))
-            throw new IllegalArgumentException("History reference must be h<n> (e.g. CALL h42 name)");
-        int targetId = Integer.parseInt(ref.substring(1));
-        String name    = parts[2];
-        var displaced  = names.bind(name, targetId);
-        int callId     = history.record(cmd, System.currentTimeMillis());
+    private String handleCallById(int targetId, String name, String rawCmd) throws SQLException {
+        var displaced = names.bind(name, targetId);
+        int callId    = history.record(rawCmd, System.currentTimeMillis());
         history.setInputs(callId, targetId, displaced.orElse(null));
         return "{\"bound\":\"" + escJson(name) + "\",\"historyId\":" + targetId + "}\n";
     }
 
-    private String handleForget(String cmd) throws SQLException {
-        String name = cmd.split("\\s+")[1];
-        // Record the old binding in input1 so UNDO can restore it
+    private String handleForget(String name, String rawCmd) throws SQLException {
         Integer oldHistId = names.resolve(name).orElse(null);
         names.forget(name);
-        int forgetId = history.record(cmd, System.currentTimeMillis());
+        int forgetId = history.record(rawCmd, System.currentTimeMillis());
         if (oldHistId != null) history.setInputs(forgetId, oldHistId, null);
         return "{\"forgot\":\"" + escJson(name) + "\"}\n";
     }
@@ -199,9 +226,10 @@ public final class HeapSession implements AutoCloseable {
     private String handleRecall(int histId) throws IOException, SQLException {
         var entry = history.findById(histId);
         if (entry.isEmpty()) return "{\"error\":\"No history entry h" + histId + "\"}\n";
-        if (entry.get().sqlTable() != null)   return sql.selectAsJsonl(entry.get().sqlTable());
+        if (entry.get().sqlTable()   != null) return sql.selectAsJsonl(entry.get().sqlTable());
         if (entry.get().bitsetFile() != null) return displayBitSet(loadBitSetFromFile(entry.get().bitsetFile()));
-        return handleQuery(entry.get().command());
+        return handleComplete(DslParser.parse(entry.get().command()) instanceof DslParser.Complete c
+            ? c.action() : null, entry.get().command());
     }
 
     private String handleUndo() throws SQLException {
@@ -209,28 +237,36 @@ public final class HeapSession implements AutoCloseable {
         if (entry.isEmpty()) return "{\"error\":\"nothing to undo\"}\n";
 
         String cmd   = entry.get().command();
-        String upper = cmd.stripLeading().toUpperCase();
         int undoId   = history.record("UNDO", System.currentTimeMillis());
 
-        if (upper.startsWith("CALL ")) {
-            String name = cmd.strip().split("\\s+")[2]; // CALL THAT <name> or CALL @id <name>
-            names.forget(name);
-            Integer displaced = entry.get().input2();
-            if (displaced != null) names.bind(name, displaced);
-            history.setInputs(undoId, entry.get().id(), null);
-            String msg = displaced != null
-                ? "{\"undone\":\"CALL\",\"name\":\"" + escJson(name) + "\",\"restored\":" + displaced + "}"
-                : "{\"undone\":\"CALL\",\"name\":\"" + escJson(name) + "\"}";
-            return msg + "\n";
-        }
-
-        if (upper.startsWith("FORGET ")) {
-            String name = cmd.strip().split("\\s+")[1];
-            Integer oldHistId = entry.get().input1();
-            if (oldHistId == null) return "{\"error\":\"cannot undo FORGET: old binding not recorded\"}\n";
-            names.bind(name, oldHistId);
-            history.setInputs(undoId, entry.get().id(), null);
-            return "{\"undone\":\"FORGET\",\"name\":\"" + escJson(name) + "\",\"restored\":" + oldHistId + "}\n";
+        if (DslParser.parse(cmd) instanceof DslParser.Complete c) {
+            if (c.action() instanceof DslParser.CallThatQuery ct) {
+                names.forget(ct.name());
+                Integer displaced = entry.get().input2();
+                if (displaced != null) names.bind(ct.name(), displaced);
+                history.setInputs(undoId, entry.get().id(), null);
+                String msg = displaced != null
+                    ? "{\"undone\":\"CALL\",\"name\":\"" + escJson(ct.name()) + "\",\"restored\":" + displaced + "}"
+                    : "{\"undone\":\"CALL\",\"name\":\"" + escJson(ct.name()) + "\"}";
+                return msg + "\n";
+            }
+            if (c.action() instanceof DslParser.CallByIdQuery cb) {
+                names.forget(cb.name());
+                Integer displaced = entry.get().input2();
+                if (displaced != null) names.bind(cb.name(), displaced);
+                history.setInputs(undoId, entry.get().id(), null);
+                String msg = displaced != null
+                    ? "{\"undone\":\"CALL\",\"name\":\"" + escJson(cb.name()) + "\",\"restored\":" + displaced + "}"
+                    : "{\"undone\":\"CALL\",\"name\":\"" + escJson(cb.name()) + "\"}";
+                return msg + "\n";
+            }
+            if (c.action() instanceof DslParser.ForgetQuery fq) {
+                Integer oldHistId = entry.get().input1();
+                if (oldHistId == null) return "{\"error\":\"cannot undo FORGET: old binding not recorded\"}\n";
+                names.bind(fq.name(), oldHistId);
+                history.setInputs(undoId, entry.get().id(), null);
+                return "{\"undone\":\"FORGET\",\"name\":\"" + escJson(fq.name()) + "\",\"restored\":" + oldHistId + "}\n";
+            }
         }
 
         return "{\"error\":\"last undoable command was not a CALL or FORGET\"}\n";
@@ -250,87 +286,7 @@ public final class HeapSession implements AutoCloseable {
         }
     }
 
-    private String handleQuery(String cmd) throws IOException, SQLException {
-        DslParser.Query parsed;
-        try {
-            parsed = DslParser.parse(cmd);
-        } catch (IllegalArgumentException e) {
-            return "{\"error\":\"" + escJson(e.getMessage()) + "\"}\n";
-        }
-
-        int histId = history.record(cmd, System.currentTimeMillis());
-
-        return switch (parsed) {
-            case DslParser.Pipeline p -> executePipeline(p, histId);
-            case DslParser.AllSource q -> {
-                long[] bits = QueryEngine.buildBitSet(heap, registry, q.className());
-                that = new BitSetAnswer(bits, heap.objectCount());
-                thatHistId = histId;
-                // bitset_file is null until CALL THAT names it; display top N
-                yield displayBitSet(bits);
-            }
-            case DslParser.AllTopByRetainedSize q -> {
-                List<TopNRow> rows =
-                    QueryEngine.allTopByRetainedSize(heap, registry, q.className(), q.n());
-                String tableName = tables.writeTopNResult(rows);
-                history.setSqlTable(histId, tableName);
-                that = new TableAnswer(tableName, rows.size());
-                thatHistId = histId;
-                yield JsonlFormatter.formatTopN(rows);
-            }
-            case DslParser.AllBottomByRetainedSize q -> {
-                List<TopNRow> rows =
-                    QueryEngine.allBottomByRetainedSize(heap, registry, q.className(), q.n());
-                String tableName = tables.writeTopNResult(rows);
-                history.setSqlTable(histId, tableName);
-                that = new TableAnswer(tableName, rows.size());
-                thatHistId = histId;
-                yield JsonlFormatter.formatTopN(rows);
-            }
-            case DslParser.AllRetaining q -> {
-                List<TopNRow> rows =
-                    QueryEngine.allRetaining(heap, registry, q.className(), q.op(), q.size());
-                String tableName = tables.writeTopNResult(rows);
-                history.setSqlTable(histId, tableName);
-                that = new TableAnswer(tableName, rows.size());
-                thatHistId = histId;
-                yield JsonlFormatter.formatTopN(rows);
-            }
-            case DslParser.AggregateCount q -> {
-                long count = QueryEngine.aggregateCount(heap, registry, q.className());
-                yield JsonlFormatter.formatCount(q.className(), count);
-            }
-            case DslParser.AggregateRetainedSize q -> {
-                long value = QueryEngine.aggregateRetainedSize(
-                    heap, registry, q.className(), q.func());
-                yield JsonlFormatter.formatAggregateRetainedSize(q.className(), q.func(), value);
-            }
-            case DslParser.ClassesQuery q -> {
-                var classes = QueryEngine.classes(heap, registry, q.glob());
-                yield JsonlFormatter.formatClasses(classes);
-            }
-            case DslParser.ExplainQuery q -> {
-                var path = QueryEngine.explain(heap, registry, q.denseId());
-                yield JsonlFormatter.formatExplain(path);
-            }
-            case DslParser.DominatorSubtree q -> {
-                List<TopNRow> rows =
-                    QueryEngine.dominatorSubtree(heap, registry, q.denseId(), q.topN());
-                String tableName = tables.writeTopNResult(rows);
-                history.setSqlTable(histId, tableName);
-                that = new TableAnswer(tableName, rows.size());
-                thatHistId = histId;
-                yield JsonlFormatter.formatTopN(rows);
-            }
-            case DslParser.StatusQuery ignored -> {
-                yield "{\"objectCount\":" + heap.objectCount()
-                    + ",\"classCount\":" + heap.classCount()
-                    + "}\n";
-            }
-        };
-    }
-
-    // ── Pipeline execution helpers ────────────────────────────────────────────
+    // ── Pipeline execution ────────────────────────────────────────────────────
 
     private long[] resolveSource(DslParser.Source source) throws IOException, SQLException {
         return switch (source) {
@@ -346,14 +302,13 @@ public final class HeapSession implements AutoCloseable {
     }
 
     private long[] resolveBitSetByName(String name) throws IOException, SQLException {
-        // Built-in names resolve without session state
         long[] builtin = QueryEngine.buildBuiltinBitSet(heap, registry, name);
         if (builtin != null) return builtin;
 
         int histId = names.resolve(name)
             .orElseThrow(() -> new IllegalArgumentException("Unknown name: '" + name + "'"));
         var entry = history.findById(histId)
-            .orElseThrow(() -> new IllegalStateException("History @" + histId + " not found"));
+            .orElseThrow(() -> new IllegalStateException("History h" + histId + " not found"));
         if (entry.bitsetFile() != null) return loadBitSetFromFile(entry.bitsetFile());
         throw new IllegalArgumentException(
             "'" + name + "' is a table result, not a bitset — use SQL SELECT to query it");
@@ -363,14 +318,14 @@ public final class HeapSession implements AutoCloseable {
             throws IOException {
         if (contextClass == null)
             throw new IllegalArgumentException(
-                "WHERE requires a class context — use ALL <class> or add OF TYPE <class> before WHERE");
+                "WHERE requires a class context — use CLASS <class> or add OF TYPE <class> before WHERE");
         ClassNameIndex nameIndex = ClassNameIndex.load(heap);
         int classDenseId = nameIndex.resolve(contextClass);
         if (classDenseId < 0)
             throw new IllegalArgumentException("Unknown class: '" + contextClass + "'");
         long longValue = parseWhereValue(f.rawValue());
         return QueryEngine.buildWhereFilterBitSet(heap, registry, bits, classDenseId,
-                                                   f.fieldName(), f.op(), longValue);
+                                                   f.field(), f.op(), longValue);
     }
 
     private static long parseWhereValue(String raw) {
@@ -483,8 +438,6 @@ public final class HeapSession implements AutoCloseable {
             throws IOException, SQLException {
         long[] bits = resolveSource(p.source());
 
-        // Track the current type context for WHERE field lookups.
-        // Starts from the pipeline source; updated by each OfTypeFilter encountered.
         String contextClass = switch (p.source()) {
             case DslParser.ClassSource cs -> cs.className().equals("*") ? null : cs.className();
             default -> null;
@@ -557,8 +510,12 @@ public final class HeapSession implements AutoCloseable {
         return bits;
     }
 
+    private static boolean matchGlob(String name, String glob) {
+        return name.matches(glob.replace(".", "\\.").replace("*", ".*").replace("?", "."));
+    }
+
     private static String escJson(String s) {
-        return s.replace("\\", "\\\\").replace("\"", "\\\"");
+        return s == null ? "" : s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     @Override

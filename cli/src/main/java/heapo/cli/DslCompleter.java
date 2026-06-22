@@ -1,6 +1,7 @@
 package heapo.cli;
 
 import heapo.query_engine.ClassNameIndex;
+import heapo.query_engine.DslParser;
 import heapo.session.NamesManager;
 import heapo.unpack.UnpackedHeap;
 import org.jline.reader.Candidate;
@@ -9,29 +10,25 @@ import org.jline.reader.LineReader;
 import org.jline.reader.ParsedLine;
 
 import java.io.IOException;
-import java.util.*;
+import java.util.List;
 
 /**
- * JLine3 {@link Completer} that suggests DSL tokens based on grammar position.
+ * JLine3 {@link Completer} backed by the DSL parser.
+ *
+ * <p>Calls {@link DslParser#parse} on the tokens before the cursor, then offers
+ * the keyword completions returned by the parse result. Completion markers
+ * ({@link DslParser#COMPLETE_CLASS}, {@link DslParser#COMPLETE_NAME}) are
+ * expanded against live heap / session data.
  */
 final class DslCompleter implements Completer {
 
-    private static final List<String> TOP_LEVEL = List.of(
-        "CLASS", "FROM", "CLASSES", "EXPLAIN", "RETAINED", "STATUS",
-        "TOP", "BOTTOM",
-        "NAMES", "UNDO", "HISTORY", "CALL", "FORGET",
-        "SELECT", "WITH", "exit", "quit"
-    );
-
-    private static final List<String> PIPELINE_FILTERS = List.of("IN", "NOT", "RETAINED", "RETAINING", "OF", "SIZED", "REFERENCING", "REFERENCED", "REACHABLE", "WHERE");
     private static final List<String> BUILTIN_NAMES = List.of(
         "GcRoots", "Threads", "ClassLoaders",
-        "SoftReferences", "WeakReferences", "PhantomReferences");
-    private static final List<String> PIPELINE_TERMINALS =
-        List.of("TOP", "BOTTOM", "COUNT", "SUM", "MAX");
+        "SoftReferences", "WeakReferences", "PhantomReferences"
+    );
 
-    private final UnpackedHeap  heap;
-    private final NamesManager  names;
+    private final UnpackedHeap heap;
+    private final NamesManager names;
 
     DslCompleter(UnpackedHeap heap, NamesManager names) {
         this.heap  = heap;
@@ -41,162 +38,46 @@ final class DslCompleter implements Completer {
     @Override
     public void complete(LineReader reader, ParsedLine line, List<Candidate> candidates) {
         List<String> words = line.words();
-        // words() includes the current (possibly-empty) word being typed
         int wordIndex = line.wordIndex();
         String partial = wordIndex < words.size() ? words.get(wordIndex) : "";
 
-        if (wordIndex == 0) {
-            suggest(candidates, partial, TOP_LEVEL);
-            return;
-        }
+        // Join all complete tokens (before the current partial word) and parse them.
+        String completeInput = wordIndex == 0 ? ""
+            : String.join(" ", words.subList(0, wordIndex));
 
-        String w0 = words.get(0).toUpperCase();
-        switch (w0) {
-            case "CLASS" -> completeClass(words, wordIndex, partial, candidates);
-            case "FROM" -> completeFrom(words, wordIndex, partial, candidates);
-            case "CLASSES", "NAMES" -> {
-                if (wordIndex == 1) suggest(candidates, partial, List.of("MATCHING"));
-            }
-            case "EXPLAIN" -> {
-                if (wordIndex == 1) {
-                    suggest(candidates, partial, List.of("i"));
-                    suggest(candidates, partial, allNameSuggestions());
+        List<String> completions = switch (DslParser.parse(completeInput)) {
+            case DslParser.Complete c  -> c.completions();
+            case DslParser.Incomplete i -> i.completions();
+            case DslParser.Invalid ignored -> List.of();
+        };
+
+        for (String c : completions) {
+            switch (c) {
+                case DslParser.COMPLETE_CLASS -> {
+                    try {
+                        for (String name : ClassNameIndex.load(heap).allDottedNames())
+                            if (matchesPartial(name, partial))
+                                candidates.add(new Candidate(name));
+                    } catch (IOException ignored) {}
+                    if (matchesPartial("*", partial)) candidates.add(new Candidate("*"));
+                }
+                case DslParser.COMPLETE_NAME -> {
+                    for (String name : BUILTIN_NAMES)
+                        if (matchesPartial(name, partial)) candidates.add(new Candidate(name));
+                    for (String name : names.all().keySet())
+                        if (matchesPartial(name, partial)) candidates.add(new Candidate(name));
+                }
+                // Free-form tokens: no suggestions to add
+                case DslParser.COMPLETE_NEW_NAME, DslParser.COMPLETE_IDENT,
+                     "<n>", "<bytes>", "<glob>", "<value>", "i<n>", "h<n>" -> {}
+                default -> {
+                    if (matchesPartial(c, partial)) candidates.add(new Candidate(c));
                 }
             }
-            case "RETAINED" -> completeRetainedBy(words, wordIndex, partial, candidates);
-            case "CALL" -> completeCall(words, wordIndex, partial, candidates);
-            case "FORGET" -> {
-                if (wordIndex == 1)
-                    suggest(candidates, partial, new ArrayList<>(names.all().keySet()));
-            }
-            default -> {} // no suggestion
         }
     }
 
-    private void completeClass(List<String> words, int idx, String partial, List<Candidate> candidates) {
-        switch (idx) {
-            case 1 -> {
-                try {
-                    suggest(candidates, partial, ClassNameIndex.load(heap).allDottedNames());
-                } catch (IOException ignored) {}
-                suggest(candidates, partial, List.of("*"));
-            }
-            case 2 -> suggest(candidates, partial,
-                List.of("TOP", "BOTTOM", "RETAINING", "COUNT", "SUM", "MAX",
-                        "IN", "NOT", "RETAINED", "OF", "SIZED",
-                        "REFERENCING", "REFERENCED", "REACHABLE", "WHERE"));
-            case 3 -> {
-                String w2 = words.get(2).toUpperCase();
-                if (w2.equals("SUM") || w2.equals("MAX"))
-                    suggest(candidates, partial, List.of("retainedSize"));
-            }
-            case 4 -> {
-                String w2 = words.get(2).toUpperCase();
-                if (w2.equals("TOP") || w2.equals("BOTTOM"))
-                    suggest(candidates, partial, List.of("BY"));
-            }
-            case 5 -> {
-                String w2 = words.get(2).toUpperCase();
-                if ((w2.equals("TOP") || w2.equals("BOTTOM"))
-                        && words.get(4).equalsIgnoreCase("BY"))
-                    suggest(candidates, partial, List.of("retainedSize"));
-            }
-        }
-    }
-
-    private List<String> allNameSuggestions() {
-        var list = new ArrayList<>(BUILTIN_NAMES);
-        list.addAll(names.all().keySet());
-        return list;
-    }
-
-    private void completeFrom(List<String> words, int idx, String partial, List<Candidate> candidates) {
-        if (idx == 1) {
-            // Source: THAT, built-in names, or user-defined names
-            var opts = new ArrayList<>(List.of("THAT"));
-            opts.addAll(allNameSuggestions());
-            suggest(candidates, partial, opts);
-            return;
-        }
-        // After source: filters or terminal
-        completePipelineSuffix(words, idx, partial, candidates);
-    }
-
-    private void completePipelineSuffix(List<String> words, int idx, String partial,
-                                         List<Candidate> candidates) {
-        // Skip the source tokens: for ALL skip keyword + class name, for FROM skip keyword + source name
-        int i = 2; // both ALL and FROM have 2-token sources
-
-        while (i < idx) {
-            String w = words.get(i).toUpperCase();
-            if (w.equals("IN")) { i += 2; continue; }
-            if (w.equals("NOT") && i + 1 < words.size() && words.get(i + 1).equalsIgnoreCase("IN")) {
-                i += 3; continue;
-            }
-            if (w.equals("RETAINED") && i + 1 < words.size()
-                    && words.get(i + 1).equalsIgnoreCase("BY")) {
-                i += 3; continue; // RETAINED BY <name>
-            }
-            if ((w.equals("RETAINING") || w.equals("SIZED")) && i + 2 < words.size()) {
-                i += 3; continue; // RETAINING/SIZED op n
-            }
-            if (w.equals("OF") && i + 1 < words.size()
-                    && words.get(i + 1).equalsIgnoreCase("TYPE")) {
-                // OF TYPE [EXACTLY] <class> — 3 or 4 tokens
-                int advance = (i + 2 < words.size() && words.get(i + 2).equalsIgnoreCase("EXACTLY")) ? 4 : 3;
-                i += advance; continue;
-            }
-            if (w.equals("REFERENCING") && i + 1 < words.size()) { i += 2; continue; }
-            if (w.equals("REFERENCED") && i + 1 < words.size()
-                    && words.get(i + 1).equalsIgnoreCase("BY")) { i += 3; continue; }
-            if (w.equals("REACHABLE") && i + 1 < words.size()
-                    && words.get(i + 1).equalsIgnoreCase("FROM")) { i += 3; continue; }
-            if (w.equals("WHERE") && i + 3 < words.size()) { i += 4; continue; } // WHERE field op value
-            // Must be a terminal keyword — don't suggest more
-            return;
-        }
-        if (i == idx) {
-            // At filter/terminal position: offer both
-            var opts = new ArrayList<>(PIPELINE_FILTERS);
-            opts.addAll(PIPELINE_TERMINALS);
-            suggest(candidates, partial, opts);
-        } else if (i == idx - 1) {
-            // One token into an incomplete filter — figure out which
-            String prev = words.get(i - 1).toUpperCase();
-            switch (prev) {
-                case "IN"       -> suggest(candidates, partial, allNameSuggestions());
-                case "NOT"      -> suggest(candidates, partial, List.of("IN"));
-                case "RETAINED" -> suggest(candidates, partial, List.of("BY"));
-                case "BY"       -> suggest(candidates, partial, allNameSuggestions());
-            }
-        }
-    }
-
-    private void completeRetainedBy(List<String> words, int idx, String partial, List<Candidate> candidates) {
-        switch (idx) {
-            case 1 -> suggest(candidates, partial, List.of("BY"));
-            case 2 -> {
-                if (words.get(1).equalsIgnoreCase("BY"))
-                    suggest(candidates, partial, List.of("i"));
-            }
-            case 3 -> suggest(candidates, partial, List.of("TOP"));
-            case 5 -> suggest(candidates, partial, List.of("BY"));
-            case 6 -> suggest(candidates, partial, List.of("retainedSize"));
-        }
-    }
-
-    private void completeCall(List<String> words, int idx, String partial, List<Candidate> candidates) {
-        if (idx == 1) {
-            suggest(candidates, partial, List.of("THAT"));
-        } else if (idx == 2 && words.get(1).equalsIgnoreCase("THAT")) {
-            suggest(candidates, partial, List.of("<name>"));
-        }
-    }
-
-    private static void suggest(List<Candidate> candidates, String partial, Collection<String> options) {
-        for (String opt : options) {
-            if (opt.toLowerCase().startsWith(partial.toLowerCase()))
-                candidates.add(new Candidate(opt));
-        }
+    private static boolean matchesPartial(String candidate, String partial) {
+        return candidate.toLowerCase().startsWith(partial.toLowerCase());
     }
 }

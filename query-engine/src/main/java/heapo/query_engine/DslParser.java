@@ -5,25 +5,39 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * DSL parser. Supported queries:
- * <ul>
- *   <li>{@code CLASS <class>} — bitset of all instances (pipeline source)
- *   <li>{@code CLASS <class> TOP <n> [BY retainedSize]}
- *   <li>{@code CLASS <class> BOTTOM <n> [BY retainedSize]}
- *   <li>{@code CLASS <class> RETAINING > <bytes>}
- *   <li>{@code CLASS <class> COUNT}
- *   <li>{@code CLASS <class> SUM retainedSize}
- *   <li>{@code CLASS <class> MAX retainedSize}
- *   <li>{@code FROM <name> | FROM THAT} — named/current bitset as source
- *   <li>{@code <source> [filter]* [terminal]} — composable pipeline
- *   <li>{@code CLASSES [MATCHING <glob>]}
- *   <li>{@code EXPLAIN &<denseId>}
- *   <li>{@code RETAINED BY &<id> [TOP n [BY retainedSize]]}
- *   <li>{@code STATUS}
- * </ul>
- * {@code <class>} is a fully-qualified dotted class name or {@code *} for all objects.
+ * Recursive-descent DSL parser.
+ *
+ * <p>Returns a {@link ParseResult}: either {@link Invalid} (first error), {@link Incomplete}
+ * (valid prefix, needs more input), or {@link Complete} (runnable query plus optional
+ * completions for what could legally follow).
+ *
+ * <p>Tokenisation is trim-and-split on whitespace; no further regex processing is needed.
  */
 public final class DslParser {
+
+    // ── ParseResult ───────────────────────────────────────────────────────────
+
+    public sealed interface ParseResult {}
+
+    /** Input does not match the grammar — {@code message} explains why. */
+    public record Invalid(String message) implements ParseResult {}
+
+    /** Input is a valid prefix but not yet a complete query. */
+    public record Incomplete(List<String> completions) implements ParseResult {}
+
+    /** Input is a complete, executable query. {@code completions} lists what could legally follow. */
+    public record Complete(Query action, List<String> completions) implements ParseResult {}
+
+    // ── Completion markers ────────────────────────────────────────────────────
+
+    /** The next token should be a fully-qualified class name (or {@code *}). */
+    public static final String COMPLETE_CLASS    = "<class>";
+    /** The next token should be a named bitset or built-in name. */
+    public static final String COMPLETE_NAME     = "<name>";
+    /** The next token should be a new user-chosen name for binding. */
+    public static final String COMPLETE_NEW_NAME = "<new-name>";
+    /** The next token is a free-form identifier (e.g. field name). */
+    public static final String COMPLETE_IDENT    = "<ident>";
 
     // ── Pipeline building blocks ──────────────────────────────────────────────
 
@@ -33,327 +47,442 @@ public final class DslParser {
     public record ThatSource()                  implements Source {}
 
     public sealed interface Filter {}
-    public record InFilter(String name)         implements Filter {}
-    public record NotInFilter(String name)      implements Filter {}
-    /** Keep only objects in the dominator subtree of any object in the named bitset. */
-    public record RetainedByFilter(String name)   implements Filter {}
-    /** Keep only objects whose retained size satisfies the comparison. */
-    public record RetainingFilter(String op, long size) implements Filter {}
-    /**
-     * Keep only objects whose runtime class is {@code className} or any subclass.
-     * When {@code exactly=true}, only the exact class is matched (no subclasses).
-     */
+    public record InFilter(String name)                           implements Filter {}
+    public record NotInFilter(String name)                        implements Filter {}
+    public record RetainedByFilter(String name)                   implements Filter {}
+    public record RetainingFilter(String op, long size)           implements Filter {}
     public record OfTypeFilter(String className, boolean exactly) implements Filter {}
-    /** Keep only objects whose shallow size satisfies the comparison. */
-    public record SizedFilter(String op, long size) implements Filter {}
-    /** Keep objects that have a direct reference to any object in the named set (reverse-refs). */
-    public record ReferencingFilter(String name)   implements Filter {}
-    /** Keep objects that are directly referenced by any object in the named set (forward-refs). */
-    public record ReferencedByFilter(String name)  implements Filter {}
-    /** Keep objects transitively reachable (by following forward refs) from any object in the named set. */
-    public record ReachableFromFilter(String name) implements Filter {}
-    /**
-     * Keep objects whose primitive field satisfies the comparison.
-     * {@code rawValue} is the literal token from the DSL (numeric or {@code true}/{@code false}).
-     */
-    public record WhereFilter(String fieldName, String op, String rawValue) implements Filter {}
+    public record SizedFilter(String op, long size)               implements Filter {}
+    public record ReferencingFilter(String name)                  implements Filter {}
+    public record ReferencedByFilter(String name)                 implements Filter {}
+    public record ReachableFromFilter(String name)                implements Filter {}
+    public record WhereFilter(String field, String op, String rawValue) implements Filter {}
 
     public sealed interface Terminal {}
-    public record TopNTerminal(int n)         implements Terminal {}
-    public record BottomNTerminal(int n)      implements Terminal {}
-    public record AggregateCountTerminal()    implements Terminal {}
-    /** {@code func} is {@code "MAX"} or {@code "SUM"}. */
-    public record AggregateRetainedSizeTerminal(String func) implements Terminal {}
+    public record TopNTerminal(int n)                          implements Terminal {}
+    public record BottomNTerminal(int n)                       implements Terminal {}
+    public record AggregateCountTerminal()                     implements Terminal {}
+    public record AggregateRetainedSizeTerminal(String func)   implements Terminal {}
 
-    // ── Top-level Query types ─────────────────────────────────────────────────
+    // ── Query types ───────────────────────────────────────────────────────────
 
     public sealed interface Query {}
 
-    /** {@code ALL <class>} alone — all instances as a bitset; implicit top-N display. */
-    public record AllSource(String className) implements Query {}
-    public record AllTopByRetainedSize(String className, int n) implements Query {}
-    /** Smallest-retained-size N instances of className. */
-    public record AllBottomByRetainedSize(String className, int n) implements Query {}
-    /** All instances with retained size satisfying the comparison. */
-    public record AllRetaining(String className, String op, long size) implements Query {}
-    public record AggregateCount(String className) implements Query {}
-    /** MAX or SUM of retainedSize across all instances of className. */
-    public record AggregateRetainedSize(String className, String func) implements Query {}
-    public record ClassesQuery(String glob) implements Query {} // null = all classes
-    public record ExplainQuery(int denseId) implements Query {}
-    /** All objects in the dominator subtree of denseId, optionally limited to top n. */
-    public record DominatorSubtree(int denseId, int topN) implements Query {} // topN=-1 = all
-    /**
-     * A composable pipeline: source → filters → terminal.
-     * {@code terminal == null} means implicit top-N display; result stored as BitSetAnswer.
-     */
+    // DSL pipeline — covers all source→filter*→terminal forms
     public record Pipeline(Source source, List<Filter> filters, Terminal terminal) implements Query {}
-    public record StatusQuery() implements Query {}
+
+    // Standalone DSL queries
+    public record StatusQuery()                              implements Query {}
+    public record ClassesQuery(String glob)                  implements Query {}  // null = all
+    public record ExplainQuery(int denseId)                  implements Query {}
+    public record DominatorSubtree(int denseId, int topN)    implements Query {}  // topN=-1 = all
+
+    // Session commands
+    public record NamesQuery(String glob)                    implements Query {}  // null = all
+    public record ExplainNameQuery(String name)              implements Query {}
+    public record ThatQuery()                                implements Query {}
+    public record UndoQuery()                                implements Query {}
+    public record HistoryRecallQuery(int histId)             implements Query {}
+    public record HistoryQuery(int limit)                    implements Query {}
+    public record CallThatQuery(String name)                 implements Query {}
+    public record CallByIdQuery(int histId, String name)     implements Query {}
+    public record ForgetQuery(String name)                   implements Query {}
+
+    // ── Grammar constants ─────────────────────────────────────────────────────
+
+    private static final Set<String> OPS = Set.of(">", ">=", "<", "<=", "=");
+
+    private static final List<String> TOP_LEVEL = List.of(
+        "CLASS", "FROM", "TOP", "BOTTOM", "CLASSES", "EXPLAIN", "RETAINED", "STATUS",
+        "NAMES", "THAT", "UNDO", "HISTORY", "CALL", "FORGET"
+    );
+
+    private static final List<String> FILTER_KEYWORDS = List.of(
+        "IN", "NOT", "RETAINED", "RETAINING", "OF", "SIZED",
+        "REFERENCING", "REFERENCED", "REACHABLE", "WHERE"
+    );
+
+    private static final List<String> TERMINAL_KEYWORDS = List.of(
+        "TOP", "BOTTOM", "COUNT", "SUM", "MAX"
+    );
+
+    private static final List<String> FILTER_OR_TERMINAL;
+    static {
+        var list = new ArrayList<>(FILTER_KEYWORDS);
+        list.addAll(TERMINAL_KEYWORDS);
+        FILTER_OR_TERMINAL = List.copyOf(list);
+    }
 
     private DslParser() {}
 
-    public static Query parse(String input) {
-        String[] tokens = input.strip().split("\\s+");
-        if (tokens.length == 0) throw new IllegalArgumentException("Empty query");
+    // ── Entry point ───────────────────────────────────────────────────────────
 
-        return switch (tokens[0].toUpperCase()) {
-            case "CLASS"    -> parseClass(tokens, input);
-            case "TOP"      -> parseClass(withClassAndStar(tokens), input);
-            case "BOTTOM"   -> parseClass(withClassAndStar(tokens), input);
-            case "FROM"     -> parseFrom(tokens, input);
-            case "CLASSES"  -> parseClasses(tokens);
-            case "EXPLAIN"  -> parseExplain(tokens);
-            case "RETAINED" -> parseRetainedBy(tokens);
-            case "STATUS"   -> new StatusQuery();
-            default         -> throw new IllegalArgumentException("Unrecognised query: " + input);
+    public static ParseResult parse(String input) {
+        String trimmed = input.strip();
+        if (trimmed.isEmpty()) return new Incomplete(TOP_LEVEL);
+        String[] t = trimmed.split("\\s+");
+        return parseTop(t);
+    }
+
+    // ── Top-level dispatch ────────────────────────────────────────────────────
+
+    private static ParseResult parseTop(String[] t) {
+        return switch (t[0].toUpperCase()) {
+            case "STATUS"   -> exactly1(t, new StatusQuery());
+            case "THAT"     -> exactly1(t, new ThatQuery());
+            case "UNDO"     -> exactly1(t, new UndoQuery());
+            case "CLASS"    -> parseClassPipeline(t, 1);
+            case "FROM"     -> parseFromPipeline(t, 1);
+            case "TOP"      -> parseTopBottom("TOP",    t, 1);
+            case "BOTTOM"   -> parseTopBottom("BOTTOM", t, 1);
+            case "CLASSES"  -> parseClasses(t, 1);
+            case "NAMES"    -> parseNames(t, 1);
+            case "EXPLAIN"  -> parseExplain(t, 1);
+            case "RETAINED" -> parseRetainedBy(t, 1);
+            case "HISTORY"  -> parseHistory(t, 1);
+            case "CALL"     -> parseCall(t, 1);
+            case "FORGET"   -> parseForget(t, 1);
+            default -> {
+                if (isHistRef(t[0])) {
+                    if (t.length > 1) yield invalid("Unexpected tokens after " + t[0]);
+                    yield complete(new HistoryRecallQuery(Integer.parseInt(t[0].substring(1))), List.of());
+                }
+                yield invalid("Unrecognised command: " + t[0]);
+            }
         };
     }
 
-    private static Query parseClass(String[] tokens, String input) {
-        if (tokens.length < 2) throw bad(input);
-        String className = tokens[1];
+    // ── CLASS pipeline source ─────────────────────────────────────────────────
 
-        // CLASS <class> alone — a bitset source with no output terminal
-        if (tokens.length == 2) return new AllSource(className);
-
-        // Detect pipeline filter keywords — route to Pipeline
-        if (tokens[2].equalsIgnoreCase("IN")
-                || (tokens[2].equalsIgnoreCase("NOT") && tokens.length > 3
-                    && tokens[3].equalsIgnoreCase("IN"))
-                || (tokens[2].equalsIgnoreCase("RETAINED") && tokens.length > 4
-                    && tokens[3].equalsIgnoreCase("BY")
-                    && !tokens[4].matches("i\\d+"))
-                || (tokens[2].equalsIgnoreCase("OF") && tokens.length > 4
-                    && tokens[3].equalsIgnoreCase("TYPE"))
-                || (tokens[2].equalsIgnoreCase("SIZED") && tokens.length > 4
-                    && Set.of(">", ">=", "<", "<=", "=").contains(tokens[3]))
-                || (tokens[2].equalsIgnoreCase("REFERENCING") && tokens.length > 3)
-                || (tokens[2].equalsIgnoreCase("REFERENCED") && tokens.length > 4
-                    && tokens[3].equalsIgnoreCase("BY"))
-                || (tokens[2].equalsIgnoreCase("REACHABLE") && tokens.length > 4
-                    && tokens[3].equalsIgnoreCase("FROM"))
-                || (tokens[2].equalsIgnoreCase("WHERE") && tokens.length > 5
-                    && Set.of(">", ">=", "<", "<=", "=").contains(tokens[4]))) {
-            return parsePipeline(new ClassSource(className), tokens, 2, input);
-        }
-
-        // CLASS <class> TOP n [BY retainedSize]
-        if (tokens.length >= 4 && tokens[2].equalsIgnoreCase("TOP")) {
-            boolean byOk = tokens.length == 4
-                || (tokens.length >= 6 && tokens[4].equalsIgnoreCase("BY")
-                    && tokens[5].equalsIgnoreCase("retainedSize"));
-            if (byOk) return new AllTopByRetainedSize(className, parseInt(tokens[3], input));
-        }
-
-        // CLASS <class> BOTTOM n [BY retainedSize]
-        if (tokens.length >= 4 && tokens[2].equalsIgnoreCase("BOTTOM")) {
-            boolean byOk = tokens.length == 4
-                || (tokens.length >= 6 && tokens[4].equalsIgnoreCase("BY")
-                    && tokens[5].equalsIgnoreCase("retainedSize"));
-            if (byOk) return new AllBottomByRetainedSize(className, parseInt(tokens[3], input));
-        }
-
-        // CLASS <class> RETAINING op n
-        if (tokens.length >= 5
-                && tokens[2].equalsIgnoreCase("RETAINING")) {
-            String op  = tokens[3];
-            if (!Set.of(">", ">=", "<", "<=", "=").contains(op))
-                throw new IllegalArgumentException("Unknown operator: " + op);
-            long size = parseLong(tokens[4], input);
-            return new AllRetaining(className, op, size);
-        }
-
-        // CLASS <class> COUNT
-        if (tokens.length == 3 && tokens[2].equalsIgnoreCase("COUNT")) {
-            return new AggregateCount(className);
-        }
-
-        // CLASS <class> SUM retainedSize
-        // CLASS <class> MAX retainedSize
-        if (tokens.length == 4
-                && (tokens[2].equalsIgnoreCase("SUM") || tokens[2].equalsIgnoreCase("MAX"))
-                && tokens[3].equalsIgnoreCase("retainedSize")) {
-            return new AggregateRetainedSize(className, tokens[2].toUpperCase());
-        }
-
-        throw bad(input);
+    private static ParseResult parseClassPipeline(String[] t, int i) {
+        if (i >= t.length) return incomplete(List.of(COMPLETE_CLASS, "*"));
+        return parsePipeline(new ClassSource(t[i]), t, i + 1);
     }
 
-    private static Query parseFrom(String[] tokens, String input) {
-        if (tokens.length < 2) throw bad(input);
-        Source source = tokens[1].equalsIgnoreCase("THAT")
-            ? new ThatSource()
-            : new NameSource(tokens[1]);
-        return parsePipeline(source, tokens, 2, input);
+    // ── FROM pipeline source ──────────────────────────────────────────────────
+
+    private static ParseResult parseFromPipeline(String[] t, int i) {
+        if (i >= t.length) {
+            var opts = new ArrayList<>(List.of("THAT"));
+            opts.add(COMPLETE_NAME);
+            return incomplete(opts);
+        }
+        Source src = eq(t[i], "THAT") ? new ThatSource() : new NameSource(t[i]);
+        return parsePipeline(src, t, i + 1);
     }
 
-    private static Query parsePipeline(Source source, String[] tokens, int idx, String input) {
+    // ── TOP / BOTTOM as standalone (implicit CLASS *) ─────────────────────────
+
+    private static ParseResult parseTopBottom(String kw, String[] t, int i) {
+        if (i >= t.length) return incomplete(List.of("<n>"));
+        return parseTerminalSuffix(kw, new ClassSource("*"), List.of(), t, i);
+    }
+
+    // ── Pipeline ──────────────────────────────────────────────────────────────
+
+    private static ParseResult parsePipeline(Source source, String[] t, int i) {
         var filters = new ArrayList<Filter>();
 
-        while (idx < tokens.length) {
-            if (tokens[idx].equalsIgnoreCase("IN")) {
-                if (idx + 1 >= tokens.length) throw bad(input);
-                filters.add(new InFilter(tokens[idx + 1]));
-                idx += 2;
-            } else if (tokens[idx].equalsIgnoreCase("NOT")
-                    && idx + 2 < tokens.length
-                    && tokens[idx + 1].equalsIgnoreCase("IN")) {
-                filters.add(new NotInFilter(tokens[idx + 2]));
-                idx += 3;
-            } else if (tokens[idx].equalsIgnoreCase("RETAINED")
-                    && idx + 2 < tokens.length
-                    && tokens[idx + 1].equalsIgnoreCase("BY")
-                    && !tokens[idx + 2].startsWith("#")) {
-                filters.add(new RetainedByFilter(tokens[idx + 2]));
-                idx += 3;
-            } else if (tokens[idx].equalsIgnoreCase("RETAINING")
-                    && idx + 2 < tokens.length
-                    && Set.of(">", ">=", "<", "<=", "=").contains(tokens[idx + 1])) {
-                long size = parseLong(tokens[idx + 2], input);
-                filters.add(new RetainingFilter(tokens[idx + 1], size));
-                idx += 3;
-            } else if (tokens[idx].equalsIgnoreCase("OF")
-                    && idx + 2 < tokens.length
-                    && tokens[idx + 1].equalsIgnoreCase("TYPE")) {
-                if (tokens[idx + 2].equalsIgnoreCase("EXACTLY") && idx + 3 < tokens.length) {
-                    filters.add(new OfTypeFilter(tokens[idx + 3], true));
-                    idx += 4;
-                } else {
-                    filters.add(new OfTypeFilter(tokens[idx + 2], false));
-                    idx += 3;
+        while (i < t.length) {
+
+            if (eq(t[i], "IN")) {
+                i++;
+                if (i >= t.length) return incomplete(List.of(COMPLETE_NAME));
+                filters.add(new InFilter(t[i++]));
+
+            } else if (eq(t[i], "NOT")) {
+                i++;
+                if (i >= t.length) return incomplete(List.of("IN"));
+                if (!eq(t[i], "IN")) return invalid("Expected IN after NOT, got: " + t[i]);
+                i++;
+                if (i >= t.length) return incomplete(List.of(COMPLETE_NAME));
+                filters.add(new NotInFilter(t[i++]));
+
+            } else if (eq(t[i], "RETAINED")) {
+                i++;
+                if (i >= t.length) return incomplete(List.of("BY"));
+                if (!eq(t[i], "BY")) return invalid("Expected BY after RETAINED, got: " + t[i]);
+                i++;
+                if (i >= t.length) return incomplete(List.of(COMPLETE_NAME));
+                filters.add(new RetainedByFilter(t[i++]));
+
+            } else if (eq(t[i], "RETAINING")) {
+                i++;
+                if (i >= t.length) return incomplete(opList());
+                if (!isOp(t[i])) return invalid("Expected comparison op after RETAINING, got: " + t[i]);
+                String op = t[i++];
+                if (i >= t.length) return incomplete(List.of("<bytes>"));
+                long size = parseLong(t[i], "RETAINING " + op);
+                if (size == Long.MIN_VALUE) return invalid("Expected number after RETAINING " + op + ", got: " + t[i]);
+                filters.add(new RetainingFilter(op, size));
+                i++;
+
+            } else if (eq(t[i], "OF")) {
+                i++;
+                if (i >= t.length) return incomplete(List.of("TYPE"));
+                if (!eq(t[i], "TYPE")) return invalid("Expected TYPE after OF, got: " + t[i]);
+                i++;
+                if (i >= t.length) return incomplete(List.of("EXACTLY", COMPLETE_CLASS));
+                boolean exactly = eq(t[i], "EXACTLY");
+                if (exactly) {
+                    i++;
+                    if (i >= t.length) return incomplete(List.of(COMPLETE_CLASS));
                 }
-            } else if (tokens[idx].equalsIgnoreCase("SIZED")
-                    && idx + 2 < tokens.length
-                    && Set.of(">", ">=", "<", "<=", "=").contains(tokens[idx + 1])) {
-                long size = parseLong(tokens[idx + 2], input);
-                filters.add(new SizedFilter(tokens[idx + 1], size));
-                idx += 3;
-            } else if (tokens[idx].equalsIgnoreCase("REFERENCING")
-                    && idx + 1 < tokens.length) {
-                filters.add(new ReferencingFilter(tokens[idx + 1]));
-                idx += 2;
-            } else if (tokens[idx].equalsIgnoreCase("REFERENCED")
-                    && idx + 2 < tokens.length
-                    && tokens[idx + 1].equalsIgnoreCase("BY")) {
-                filters.add(new ReferencedByFilter(tokens[idx + 2]));
-                idx += 3;
-            } else if (tokens[idx].equalsIgnoreCase("REACHABLE")
-                    && idx + 2 < tokens.length
-                    && tokens[idx + 1].equalsIgnoreCase("FROM")) {
-                filters.add(new ReachableFromFilter(tokens[idx + 2]));
-                idx += 3;
-            } else if (tokens[idx].equalsIgnoreCase("WHERE")
-                    && idx + 3 < tokens.length
-                    && Set.of(">", ">=", "<", "<=", "=").contains(tokens[idx + 2])) {
-                filters.add(new WhereFilter(tokens[idx + 1], tokens[idx + 2], tokens[idx + 3]));
-                idx += 4;
+                filters.add(new OfTypeFilter(t[i++], exactly));
+
+            } else if (eq(t[i], "SIZED")) {
+                i++;
+                if (i >= t.length) return incomplete(opList());
+                if (!isOp(t[i])) return invalid("Expected comparison op after SIZED, got: " + t[i]);
+                String op = t[i++];
+                if (i >= t.length) return incomplete(List.of("<bytes>"));
+                long size = parseLong(t[i], "SIZED " + op);
+                if (size == Long.MIN_VALUE) return invalid("Expected number after SIZED " + op + ", got: " + t[i]);
+                filters.add(new SizedFilter(op, size));
+                i++;
+
+            } else if (eq(t[i], "REFERENCING")) {
+                i++;
+                if (i >= t.length) return incomplete(List.of(COMPLETE_NAME));
+                filters.add(new ReferencingFilter(t[i++]));
+
+            } else if (eq(t[i], "REFERENCED")) {
+                i++;
+                if (i >= t.length) return incomplete(List.of("BY"));
+                if (!eq(t[i], "BY")) return invalid("Expected BY after REFERENCED, got: " + t[i]);
+                i++;
+                if (i >= t.length) return incomplete(List.of(COMPLETE_NAME));
+                filters.add(new ReferencedByFilter(t[i++]));
+
+            } else if (eq(t[i], "REACHABLE")) {
+                i++;
+                if (i >= t.length) return incomplete(List.of("FROM"));
+                if (!eq(t[i], "FROM")) return invalid("Expected FROM after REACHABLE, got: " + t[i]);
+                i++;
+                if (i >= t.length) return incomplete(List.of(COMPLETE_NAME));
+                filters.add(new ReachableFromFilter(t[i++]));
+
+            } else if (eq(t[i], "WHERE")) {
+                i++;
+                if (i >= t.length) return incomplete(List.of(COMPLETE_IDENT));
+                String field = t[i++];
+                if (i >= t.length) return incomplete(opList());
+                if (!isOp(t[i])) return invalid("Expected comparison op after WHERE " + field + ", got: " + t[i]);
+                String op = t[i++];
+                if (i >= t.length) return incomplete(List.of("<value>"));
+                filters.add(new WhereFilter(field, op, t[i++]));
+
+            } else if (eq(t[i], "TOP") || eq(t[i], "BOTTOM")) {
+                String kw = t[i].toUpperCase();
+                return parseTerminalSuffix(kw, source, List.copyOf(filters), t, i + 1);
+
+            } else if (eq(t[i], "COUNT")) {
+                if (i + 1 < t.length) return invalid("Unexpected tokens after COUNT");
+                return complete(new Pipeline(source, List.copyOf(filters), new AggregateCountTerminal()), List.of());
+
+            } else if (eq(t[i], "SUM")) {
+                i++;
+                if (i >= t.length) return incomplete(List.of("retainedSize"));
+                if (!eq(t[i], "retainedSize")) return invalid("Expected retainedSize after SUM, got: " + t[i]);
+                if (i + 1 < t.length) return invalid("Unexpected tokens after SUM retainedSize");
+                return complete(new Pipeline(source, List.copyOf(filters), new AggregateRetainedSizeTerminal("SUM")), List.of());
+
+            } else if (eq(t[i], "MAX")) {
+                i++;
+                if (i >= t.length) return incomplete(List.of("retainedSize"));
+                if (!eq(t[i], "retainedSize")) return invalid("Expected retainedSize after MAX, got: " + t[i]);
+                if (i + 1 < t.length) return invalid("Unexpected tokens after MAX retainedSize");
+                return complete(new Pipeline(source, List.copyOf(filters), new AggregateRetainedSizeTerminal("MAX")), List.of());
+
             } else {
-                break;
+                return invalid("Expected filter or terminal keyword, got: " + t[i]);
             }
         }
 
-        Terminal terminal = idx < tokens.length ? parseTerminal(tokens, idx, input) : null;
-        return new Pipeline(source, List.copyOf(filters), terminal);
+        return complete(new Pipeline(source, List.copyOf(filters), null), FILTER_OR_TERMINAL);
     }
 
-    private static Terminal parseTerminal(String[] tokens, int i, String input) {
-        return switch (tokens[i].toUpperCase()) {
-            case "TOP" -> {
-                if (i + 1 >= tokens.length) throw bad(input);
-                boolean byOk = i + 2 >= tokens.length
-                    || (i + 3 < tokens.length && tokens[i + 2].equalsIgnoreCase("BY")
-                        && tokens[i + 3].equalsIgnoreCase("retainedSize"));
-                if (byOk) yield new TopNTerminal(parseInt(tokens[i + 1], input));
-                throw bad(input);
-            }
-            case "BOTTOM" -> {
-                if (i + 1 >= tokens.length) throw bad(input);
-                boolean byOk = i + 2 >= tokens.length
-                    || (i + 3 < tokens.length && tokens[i + 2].equalsIgnoreCase("BY")
-                        && tokens[i + 3].equalsIgnoreCase("retainedSize"));
-                if (byOk) yield new BottomNTerminal(parseInt(tokens[i + 1], input));
-                throw bad(input);
-            }
-            case "COUNT" -> new AggregateCountTerminal();
-            case "SUM" -> {
-                if (i + 1 >= tokens.length || !tokens[i + 1].equalsIgnoreCase("retainedSize"))
-                    throw bad(input);
-                yield new AggregateRetainedSizeTerminal("SUM");
-            }
-            case "MAX" -> {
-                if (i + 1 >= tokens.length || !tokens[i + 1].equalsIgnoreCase("retainedSize"))
-                    throw bad(input);
-                yield new AggregateRetainedSizeTerminal("MAX");
-            }
-            default -> throw bad(input);
-        };
-    }
+    /** Parse the {@code <n> [BY retainedSize]} suffix of TOP/BOTTOM, then wrap in a Pipeline. */
+    private static ParseResult parseTerminalSuffix(String kw, Source source, List<Filter> filters,
+                                                    String[] t, int i) {
+        if (i >= t.length) return incomplete(List.of("<n>"));
+        int n = parseInt(t[i]);
+        if (n < 0) return invalid("Expected positive integer after " + kw + ", got: " + t[i]);
+        i++;
+        Terminal terminal = kw.equals("TOP") ? new TopNTerminal(n) : new BottomNTerminal(n);
 
-    private static Query parseRetainedBy(String[] tokens) {
-        // RETAINED BY iN [TOP n [BY retainedSize]]
-        if (tokens.length < 3
-                || !tokens[1].equalsIgnoreCase("BY")
-                || !tokens[2].matches("i\\d+")) {
-            throw new IllegalArgumentException("Usage: RETAINED BY i<id> [TOP n [BY retainedSize]]");
+        if (i >= t.length) return complete(new Pipeline(source, filters, terminal), List.of("BY"));
+        if (eq(t[i], "BY")) {
+            i++;
+            if (i >= t.length) return incomplete(List.of("retainedSize"));
+            if (!eq(t[i], "retainedSize"))
+                return invalid("Expected retainedSize after BY, got: " + t[i]);
+            i++;
         }
-        int denseId = Integer.parseInt(tokens[2].substring(1));
-        int topN = -1;
-        if (tokens.length >= 5 && tokens[3].equalsIgnoreCase("TOP")) {
-            boolean byOk = tokens.length == 5
-                || (tokens.length >= 7 && tokens[5].equalsIgnoreCase("BY")
-                    && tokens[6].equalsIgnoreCase("retainedSize"));
-            if (byOk) topN = Integer.parseInt(tokens[4]);
-        }
-        return new DominatorSubtree(denseId, topN);
+        if (i < t.length) return invalid("Unexpected tokens after terminal: " + t[i]);
+        return complete(new Pipeline(source, filters, terminal), List.of());
     }
 
-    private static Query parseClasses(String[] tokens) {
-        if (tokens.length == 1) return new ClassesQuery(null);
-        if (tokens.length >= 3 && tokens[1].equalsIgnoreCase("MATCHING")) {
-            return new ClassesQuery(tokens[2]);
-        }
-        throw new IllegalArgumentException("Usage: CLASSES [MATCHING <glob>]");
+    // ── Standalone queries ────────────────────────────────────────────────────
+
+    private static ParseResult parseClasses(String[] t, int i) {
+        if (i >= t.length) return complete(new ClassesQuery(null), List.of("MATCHING"));
+        if (!eq(t[i], "MATCHING")) return invalid("Expected MATCHING, got: " + t[i]);
+        i++;
+        if (i >= t.length) return incomplete(List.of("<glob>"));
+        String glob = t[i++];
+        if (i < t.length) return invalid("Unexpected tokens after CLASSES MATCHING " + glob);
+        return complete(new ClassesQuery(glob), List.of());
     }
 
-    private static Query parseExplain(String[] tokens) {
-        if (tokens.length < 2) throw new IllegalArgumentException("Usage: EXPLAIN i<id>");
-        String id = tokens[1];
-        if (!id.matches("i\\d+")) throw new IllegalArgumentException("Object ID must be i<number> (e.g. i12345)");
+    private static ParseResult parseNames(String[] t, int i) {
+        if (i >= t.length) return complete(new NamesQuery(null), List.of("MATCHING"));
+        if (!eq(t[i], "MATCHING")) return invalid("Expected MATCHING, got: " + t[i]);
+        i++;
+        if (i >= t.length) return incomplete(List.of("<glob>"));
+        String glob = t[i++];
+        if (i < t.length) return invalid("Unexpected tokens after NAMES MATCHING " + glob);
+        return complete(new NamesQuery(glob), List.of());
+    }
+
+    private static ParseResult parseExplain(String[] t, int i) {
+        if (i >= t.length) return incomplete(List.of("i<n>", COMPLETE_NAME));
+        String arg = t[i];
+        if (isObjRef(arg)) {
+            int denseId = Integer.parseInt(arg.substring(1));
+            if (i + 1 < t.length) return invalid("Unexpected tokens after EXPLAIN " + arg);
+            return complete(new ExplainQuery(denseId), List.of());
+        }
+        if (i + 1 < t.length) return invalid("Unexpected tokens after EXPLAIN " + arg);
+        return complete(new ExplainNameQuery(arg), List.of());
+    }
+
+    private static ParseResult parseRetainedBy(String[] t, int i) {
+        if (i >= t.length) return incomplete(List.of("BY"));
+        if (!eq(t[i], "BY")) return invalid("Expected BY after RETAINED, got: " + t[i]);
+        i++;
+        if (i >= t.length) return incomplete(List.of("i<n>"));
+        if (!isObjRef(t[i])) return invalid("Expected i<n> after RETAINED BY, got: " + t[i]);
+        int denseId = Integer.parseInt(t[i].substring(1));
+        i++;
+        if (i >= t.length) return complete(new DominatorSubtree(denseId, -1), List.of("TOP"));
+        if (!eq(t[i], "TOP")) return invalid("Expected TOP or end of input after RETAINED BY " + t[i-1] + ", got: " + t[i]);
+        i++;
+        if (i >= t.length) return incomplete(List.of("<n>"));
+        int n = parseInt(t[i]);
+        if (n < 0) return invalid("Expected positive integer after TOP, got: " + t[i]);
+        i++;
+        if (i >= t.length) return complete(new DominatorSubtree(denseId, n), List.of("BY"));
+        if (eq(t[i], "BY")) {
+            i++;
+            if (i >= t.length) return incomplete(List.of("retainedSize"));
+            if (!eq(t[i], "retainedSize")) return invalid("Expected retainedSize after BY, got: " + t[i]);
+            i++;
+        }
+        if (i < t.length) return invalid("Unexpected tokens: " + t[i]);
+        return complete(new DominatorSubtree(denseId, n), List.of());
+    }
+
+    // ── Session commands ──────────────────────────────────────────────────────
+
+    private static ParseResult parseHistory(String[] t, int i) {
+        if (i >= t.length) return complete(new HistoryQuery(10), List.of("<n>"));
+        int n = parseInt(t[i]);
+        if (n < 0) return invalid("Expected positive integer after HISTORY, got: " + t[i]);
+        if (i + 1 < t.length) return invalid("Unexpected tokens after HISTORY " + n);
+        return complete(new HistoryQuery(n), List.of());
+    }
+
+    private static ParseResult parseCall(String[] t, int i) {
+        if (i >= t.length) return incomplete(List.of("THAT", "h<n>"));
+        if (eq(t[i], "THAT")) {
+            i++;
+            if (i >= t.length) return incomplete(List.of(COMPLETE_NEW_NAME));
+            String name = t[i++];
+            if (i < t.length) return invalid("Unexpected tokens after CALL THAT " + name);
+            return complete(new CallThatQuery(name), List.of());
+        }
+        if (isHistRef(t[i])) {
+            int histId = Integer.parseInt(t[i].substring(1));
+            i++;
+            if (i >= t.length) return incomplete(List.of(COMPLETE_NEW_NAME));
+            String name = t[i++];
+            if (i < t.length) return invalid("Unexpected tokens after CALL h" + histId + " " + name);
+            return complete(new CallByIdQuery(histId, name), List.of());
+        }
+        return invalid("Expected THAT or h<n> after CALL, got: " + t[i]);
+    }
+
+    private static ParseResult parseForget(String[] t, int i) {
+        if (i >= t.length) return incomplete(List.of(COMPLETE_NAME));
+        String name = t[i++];
+        if (i < t.length) return invalid("Unexpected tokens after FORGET " + name);
+        return complete(new ForgetQuery(name), List.of());
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private static ParseResult exactly1(String[] t, Query q) {
+        if (t.length > 1) return invalid("'" + t[0].toUpperCase() + "' takes no arguments");
+        return complete(q, List.of());
+    }
+
+    private static Complete complete(Query q, List<String> completions) {
+        return new Complete(q, completions);
+    }
+
+    private static Incomplete incomplete(List<String> completions) {
+        return new Incomplete(completions);
+    }
+
+    private static Invalid invalid(String msg) {
+        return new Invalid(msg);
+    }
+
+    private static boolean eq(String token, String keyword) {
+        return token.equalsIgnoreCase(keyword);
+    }
+
+    private static boolean isOp(String s) {
+        return OPS.contains(s);
+    }
+
+    private static List<String> opList() {
+        return List.of(">", ">=", "<", "<=", "=");
+    }
+
+    /** Returns true if {@code s} is {@code h} followed by one or more digits. */
+    static boolean isHistRef(String s) {
+        if (s.length() < 2 || Character.toUpperCase(s.charAt(0)) != 'H') return false;
+        for (int i = 1; i < s.length(); i++)
+            if (!Character.isDigit(s.charAt(i))) return false;
+        return true;
+    }
+
+    /** Returns true if {@code s} is {@code i} followed by one or more digits. */
+    static boolean isObjRef(String s) {
+        if (s.length() < 2 || Character.toUpperCase(s.charAt(0)) != 'I') return false;
+        for (int i = 1; i < s.length(); i++)
+            if (!Character.isDigit(s.charAt(i))) return false;
+        return true;
+    }
+
+    /** Parses a non-negative integer, or returns -1 on failure. */
+    private static int parseInt(String s) {
         try {
-            return new ExplainQuery(Integer.parseInt(id.substring(1)));
+            int v = Integer.parseInt(s);
+            return v > 0 ? v : -1;
         } catch (NumberFormatException e) {
-            throw new IllegalArgumentException("Invalid object ID: " + id);
+            return -1;
         }
     }
 
-    private static int parseInt(String s, String ctx) {
-        try {
-            int n = Integer.parseInt(s);
-            if (n <= 0) throw new IllegalArgumentException("Must be positive: " + s);
-            return n;
-        } catch (NumberFormatException e) {
-            throw bad(ctx);
-        }
-    }
-
+    /** Parses a long, or returns {@code Long.MIN_VALUE} on failure. */
     private static long parseLong(String s, String ctx) {
         try {
             return Long.parseLong(s);
         } catch (NumberFormatException e) {
-            throw bad(ctx);
+            return Long.MIN_VALUE;
         }
-    }
-
-    // Turns ["TOP", ...] into ["CLASS", "*", "TOP", ...] for standalone TOP/BOTTOM
-    private static String[] withClassAndStar(String[] tokens) {
-        String[] result = new String[tokens.length + 2];
-        result[0] = "CLASS";
-        result[1] = "*";
-        System.arraycopy(tokens, 0, result, 2, tokens.length);
-        return result;
-    }
-
-    private static IllegalArgumentException bad(String input) {
-        return new IllegalArgumentException("Unrecognised query: " + input);
     }
 }
