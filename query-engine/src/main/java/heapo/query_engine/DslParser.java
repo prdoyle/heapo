@@ -138,7 +138,9 @@ public final class DslParser {
             case "CLASSES"  -> parseClasses(t, 1);
             case "NAMES"    -> parseNames(t, 1);
             case "EXPLAIN"  -> parseExplain(t, 1);
-            case "RETAINED" -> parseRetainedBy(t, 1);
+            case "RETAINED"   -> parseRetainedBy(t, 1);
+            case "REFERENCED", "REFERENCING", "REACHABLE" ->
+                parsePipeline(new ClassSource("*"), t, 0);
             case "HISTORY"  -> parseHistory(t, 1);
             case "CALL"     -> parseCall(t, 1);
             case "FORGET"   -> parseForget(t, 1);
