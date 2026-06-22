@@ -460,7 +460,7 @@ public final class DslParser {
     }
 
     /** Returns true if {@code s} is {@code i} followed by one or more digits. */
-    static boolean isObjRef(String s) {
+    public static boolean isObjRef(String s) {
         if (s.length() < 2 || Character.toUpperCase(s.charAt(0)) != 'I') return false;
         for (int i = 1; i < s.length(); i++)
             if (!Character.isDigit(s.charAt(i))) return false;

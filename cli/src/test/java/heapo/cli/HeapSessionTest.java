@@ -823,4 +823,64 @@ class HeapSessionTest {
             assertEquals(1L, count, "Exactly one Bar has count=7");
         }
     }
+
+    // ── Object ID as single-bit bitset ────────────────────────────────────────
+
+    private static int extractDenseId(String jsonl) {
+        int marker  = jsonl.indexOf("\"id\":\"i");
+        int idStart = marker + "\"id\":\"i".length();
+        int idEnd   = jsonl.indexOf('"', idStart);
+        return Integer.parseInt(jsonl.substring(idStart, idEnd));
+    }
+
+    @Test
+    void objectIdUsableAsInFilter() throws Exception {
+        Path p = tempRoot.resolve("objid-in.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            String topResult = session.execute(
+                "CLASS heapo.samples.KnownObjects$Bar TOP 1 BY retainedSize");
+            int denseId = extractDenseId(topResult);
+
+            String result = session.execute("CLASS * IN i" + denseId + " COUNT");
+            assertFalse(result.contains("\"error\""), "IN i<n> should succeed: " + result);
+            long count = Long.parseLong(result.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
+            assertEquals(1L, count, "IN singleton should return exactly 1 object");
+        }
+    }
+
+    @Test
+    void objectIdUsableAsNotInFilter() throws Exception {
+        Path p = tempRoot.resolve("objid-not-in.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            String topResult = session.execute(
+                "CLASS heapo.samples.KnownObjects$Bar TOP 1 BY retainedSize");
+            int denseId = extractDenseId(topResult);
+
+            String allCount = session.execute("CLASS * COUNT");
+            String result   = session.execute("CLASS * NOT IN i" + denseId + " COUNT");
+            assertFalse(result.contains("\"error\""), "NOT IN i<n> should succeed: " + result);
+            long all  = Long.parseLong(allCount.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
+            long notIn = Long.parseLong(result.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
+            assertEquals(all - 1, notIn, "NOT IN singleton should exclude exactly 1 object");
+        }
+    }
+
+    @Test
+    void objectIdUsableAsRetainedByFilter() throws Exception {
+        Path p = tempRoot.resolve("objid-retained-by.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            String topResult = session.execute(
+                "CLASS heapo.samples.KnownObjects$Bar TOP 1 BY retainedSize");
+            int denseId = extractDenseId(topResult);
+
+            String result = session.execute("CLASS * RETAINED BY i" + denseId + " COUNT");
+            assertFalse(result.contains("\"error\""), "RETAINED BY i<n> should succeed: " + result);
+            long count = Long.parseLong(result.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
+            assertTrue(count >= 1, "Object retains at least itself");
+            // Verify the object itself appears
+            String top = session.execute("CLASS * RETAINED BY i" + denseId + " TOP 20");
+            assertTrue(top.contains("\"i" + denseId + "\""),
+                "Object should appear in its own retained set");
+        }
+    }
 }

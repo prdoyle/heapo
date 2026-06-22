@@ -303,6 +303,13 @@ public final class HeapSession implements AutoCloseable {
     }
 
     private BitSet resolveBitSetByName(String name) throws IOException, SQLException {
+        if (DslParser.isObjRef(name)) {
+            int denseId = Integer.parseInt(name.substring(1));
+            BitSet bits = new BitSet(denseId + 1);
+            bits.set(denseId);
+            return bits;
+        }
+
         BitSet builtin = QueryEngine.buildBuiltinBitSet(heap, registry, name);
         if (builtin != null) return builtin;
 
