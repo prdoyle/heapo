@@ -30,50 +30,81 @@ The REPL prompt shows the current result type and ID: `heapo s42>` means THAT is
 
 ## Workflow
 
-Run queries non-interactively with `heapo query`. The default output is human-readable; use `--output jsonl` when parsing results programmatically.
+**Prefer `heapo open` over `heapo query` for all multi-step analysis.** `heapo open` gives you a stateful session: `CALL THAT`, named results, `FROM THAT`, `FROM <name>`, and `IN <name>` all require a live session. Use `heapo query` only for truly one-shot lookups.
+
+For agent/LLM use, pipe commands into `heapo open` via stdin with `--output jsonl`:
+
+```bash
+printf 'STATUS\nCLASSES\n' | heapo open --output jsonl DUMP
+```
+
+Or for a longer investigation:
+
+```bash
+{
+  echo "TOP 20 BY retainedSize"
+  echo "CALL THAT bigLeakers"
+  echo "FROM bigLeakers RETAINED BY i1234 TOP 10 BY retainedSize"
+} | heapo open --output jsonl DUMP
+```
+
+Each command's output appears on stdout as JSONL; read it line by line.
 
 Replace `DUMP` with the actual path to the `.hprof` file in all commands below.
 
 ### 1. Orient
 
 ```bash
-heapo query DUMP STATUS
-heapo query DUMP CLASSES
+printf 'STATUS\nCLASSES\n' | heapo open --output jsonl DUMP
 ```
 
 ### 2. Find the biggest memory consumers
 
 ```bash
-heapo query DUMP --output jsonl TOP 20 BY retainedSize
+printf 'TOP 20 BY retainedSize\n' | heapo open --output jsonl DUMP
 ```
 
 Identify the classes contributing the most retained memory, then drill in:
 
 ```bash
-heapo query DUMP --output jsonl CLASS com.example.Foo TOP 10 BY retainedSize
-heapo query DUMP --output jsonl CLASS com.example.Foo SUM retainedSize
+{
+  echo "CLASS com.example.Foo TOP 10 BY retainedSize"
+  echo "CLASS com.example.Foo SUM retainedSize"
+} | heapo open --output jsonl DUMP
 ```
 
 ### 3. Trace what is holding an object in memory
 
 ```bash
-heapo query DUMP --output jsonl EXPLAIN i<id>
+printf 'EXPLAIN i<id>\n' | heapo open --output jsonl DUMP
 ```
 
-Each line is the immediate dominator — the object that, if collected, would free everything below it. Walk the chain upward to find the GC root preventing collection.
+Each line is the immediate dominator — the object that, if collected, would free everything below it. Walk the chain upward to find the GC root preventing collection. The optional `via` field names the field in the parent object that directly references the child.
 
 ### 4. Explore a dominator subtree
 
 ```bash
-heapo query DUMP --output jsonl RETAINED BY i<id> TOP 20 BY retainedSize
+printf 'RETAINED BY i<id> TOP 20 BY retainedSize\n' | heapo open --output jsonl DUMP
 ```
 
 Shows all objects exclusively retained by `i<id>`, sorted by retained size.
 
-### 5. Filter by size threshold
+### 5. Save and reuse results across queries
 
 ```bash
-heapo query DUMP --output jsonl CLASS java.lang.String RETAINING > 100000
+{
+  echo "CLASS com.example.Cache TOP 10 BY retainedSize"
+  echo "CALL THAT caches"
+  echo "FROM caches RETAINED BY i<id> TOP 10 BY retainedSize"
+} | heapo open --output jsonl DUMP
+```
+
+`CALL THAT <name>` saves the current result under a name you choose. Use it in subsequent `FROM <name>`, `IN <name>`, or `RETAINED BY <name>` filters within the same session.
+
+### 6. Filter by size threshold
+
+```bash
+printf 'CLASS java.lang.String RETAINING > 100000\n' | heapo open --output jsonl DUMP
 ```
 
 ## Full DSL reference
@@ -166,16 +197,19 @@ FROM THAT TOP 5 BY retainedSize
 **TOP / BOTTOM / RETAINING / RETAINED BY rows:**
 ```json
 {"rank":0,"id":"i12345","type":"java.util.HashMap","retainedSize":2097152,"shallowSize":48}
+{"rank":1,"id":"i99","type":"java.lang.String","retainedSize":1024,"shallowSize":24,"description":"hello world"}
 ```
+
+The optional `description` field provides a human-readable summary of the object's value. For `java.lang.String` it contains the string contents (truncated if long); for `java.lang.Class` it names the class represented.
 
 **EXPLAIN rows** (`depth` 0 = the queried object; increasing depth = toward GC root):
 ```json
-{"depth":0,"id":"i12345","type":"java.util.HashMap","retainedSize":2097152}
-{"depth":1,"id":"i99","type":"com.example.Cache","retainedSize":8388608}
+{"depth":0,"id":"i12345","type":"java.util.HashMap","retainedSize":2097152,"via":"table"}
+{"depth":1,"id":"i99","type":"com.example.Cache","retainedSize":8388608,"via":"cache"}
 {"depth":2,"id":"i7","type":"java.lang.Class","retainedSize":16777216,"notes":"com.example.Cache.class"}
 ```
 
-The optional `notes` field carries freeform human-readable context. For `java.lang.Class` objects, `notes` names the class represented (e.g. `"com.example.Cache.class"`), indicating the object is held via a static field on that class.
+The optional `via` field names the field in the parent object that directly references this object (`"[N]"` for array slot N, `"(indirect)"` if the dominator has no direct edge). The optional `notes` field carries other freeform context; for `java.lang.Class` objects it names the class represented, indicating the object is held via a static field on that class.
 
 **CLASSES rows:**
 ```json
