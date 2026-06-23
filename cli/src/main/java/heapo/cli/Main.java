@@ -58,7 +58,7 @@ public final class Main implements Runnable {
 
         Sources (produce a bitset):
           ALL                                     all objects
-          CLASS <class>                           instances of a class (wildcards * and ? supported)
+          CLASS <class>                           instances of a class (* wildcard supported)
           THAT                                    current result (as a source)
           i<n>                                    singleton: just object i<n>
           <name>                                  named result or built-in name
@@ -87,11 +87,11 @@ public final class Main implements Runnable {
 
         Other queries:
           STATUS                                  object and class counts
-          CLASSES [MATCHING <glob>]               all classes sorted by instance count
+          CLASSES [<glob>]                        all classes sorted by instance count
           EXPLAIN i<id>                           dominator chain to GC root
 
         Session commands:
-          NAMES [MATCHING <glob>]  show named bitsets (optionally filtered)
+          NAMES [<glob>]           show named bitsets (optionally filtered)
           EXPLAIN <name>           show what command produced the named result
           CALL THAT <name>         name the last result (persists a bitset to disk)
           CALL h<id> <name>        name a specific history entry

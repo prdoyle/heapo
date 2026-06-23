@@ -186,8 +186,8 @@ i1234 TOP 1                                        # inspect one object
 | Query | Returns |
 |---|---|
 | `STATUS` | Object and class count |
-| `CLASSES [MATCHING <glob>]` | All classes sorted by instance count; glob matches dotted class name |
-| `NAMES [MATCHING <glob>]` | All named bitset results; glob filters by name |
+| `CLASSES [<glob>]` | All classes sorted by instance count; glob matches dotted class name |
+| `NAMES [<glob>]` | All named bitset results; glob filters by name |
 | `EXPLAIN <name>` | Show which history command produced the named result (provenance) |
 | `EXPLAIN i<id>` | Dominator chain from object to GC root |
 

@@ -361,10 +361,10 @@ class HeapSessionTest {
         }
     }
 
-    // ── Phase: NAMES MATCHING ─────────────────────────────────────────────────
+    // ── Phase: NAMES glob ────────────────────────────────────────────────────
 
     @Test
-    void namesMatchingFiltersResults() throws Exception {
+    void namesGlobFiltersResults() throws Exception {
         Path p = tempRoot.resolve("names-matching.db");
         try (var session = new HeapSession(heap, registry, p)) {
             session.execute("CLASS heapo.samples.KnownObjects$Bar");
@@ -373,13 +373,13 @@ class HeapSessionTest {
             session.execute("CALL THAT betaSet");
 
             String all     = session.execute("NAMES");
-            String matched = session.execute("NAMES MATCHING alpha*");
-            String none    = session.execute("NAMES MATCHING zzzNone*");
+            String matched = session.execute("NAMES alpha*");
+            String none    = session.execute("NAMES zzzNone*");
 
             assertTrue(all.contains("alphaSet"), "NAMES should list alphaSet");
             assertTrue(all.contains("betaSet"),  "NAMES should list betaSet");
-            assertTrue(matched.contains("alphaSet"),  "NAMES MATCHING alpha* should include alphaSet");
-            assertFalse(matched.contains("betaSet"),  "NAMES MATCHING alpha* should exclude betaSet");
+            assertTrue(matched.contains("alphaSet"),  "NAMES alpha* should include alphaSet");
+            assertFalse(matched.contains("betaSet"),  "NAMES alpha* should exclude betaSet");
             assertTrue(none.contains("\"names\":[]"), "No-match pattern should return empty list");
         }
     }

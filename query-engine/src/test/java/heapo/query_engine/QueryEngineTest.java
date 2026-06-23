@@ -69,8 +69,8 @@ class QueryEngineTest {
     }
 
     @Test
-    void parserClassesMatching() {
-        var result = DslParser.parse("CLASSES MATCHING heapo.*");
+    void parserClassesGlob() {
+        var result = DslParser.parse("CLASSES heapo.*");
         assertInstanceOf(DslParser.Complete.class, result);
         var action = ((DslParser.Complete) result).action();
         assertInstanceOf(DslParser.ClassesQuery.class, action);

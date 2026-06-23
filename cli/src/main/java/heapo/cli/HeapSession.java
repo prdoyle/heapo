@@ -521,7 +521,7 @@ public final class HeapSession implements AutoCloseable {
     }
 
     private static boolean matchGlob(String name, String glob) {
-        return name.matches(glob.replace(".", "\\.").replace("*", ".*").replace("?", "."));
+        return name.matches(glob.replace(".", "\\.").replace("*", ".*"));
     }
 
     private static String escJson(String s) {
