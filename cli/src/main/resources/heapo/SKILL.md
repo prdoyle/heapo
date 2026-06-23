@@ -249,16 +249,14 @@ The optional `field` names the field in this object that directly references the
 
 Every conclusion presented to the user must be accompanied by the command(s) that support it and their output. This lets the user verify independently and builds trust in the analysis.
 
-Present supporting output in **human-readable form**. Run a separate `heapo open --output human` invocation if needed — the JSONL output you used for analysis is not suitable for display.
+Show only the DSL commands — not the full `heapo open` invocation — since the user already has the dump open and can run them directly. Obtain human-readable output by running a separate `--output human` invocation yourself; do not show raw JSONL to the user.
 
 Format: state the conclusion, then show the evidence inline:
 
 ```
 The cache is retaining 450 MB — two instances, one per shard.
 
-  $ heapo open --output human dump.hprof << 'EOF'
   CLASS com.example.Cache TOP 5 BY retainedSize
-  EOF
    rank  id      type                retained   shallow
       1  i4521   com.example.Cache   225.1 MB    48 B
       2  i4888   com.example.Cache   224.8 MB    48 B
