@@ -288,53 +288,113 @@ public final class Main implements Runnable {
         private static String executePipelineQuery(DslParser.Pipeline p,
                                                     UnpackedHeap heap,
                                                     IndexRegistry reg) throws IOException {
-            boolean hasSessionDep = p.source() instanceof DslParser.NameSource
-                || p.source() instanceof DslParser.ThatSource
-                || p.filters().stream().anyMatch(
-                    f -> f instanceof DslParser.InFilter
-                      || f instanceof DslParser.NotInFilter
-                      || f instanceof DslParser.RetainedByFilter);
-            if (hasSessionDep) {
-                System.err.println(
-                    "Error: name/THAT resolution requires a session — use 'heapo open'");
-                return null;
+            // Resolve source
+            BitSet b;
+            String contextClass = null;
+            switch (p.source()) {
+                case DslParser.ClassSource cs -> {
+                    b = QueryEngine.buildBitSet(heap, reg, cs.className());
+                    contextClass = cs.className().equals("*") ? null : cs.className();
+                }
+                case DslParser.NameSource ns -> {
+                    b = QueryEngine.buildBuiltinBitSet(heap, reg, ns.name());
+                    if (b == null) {
+                        System.err.println(
+                            "Error: '" + ns.name() + "' requires a session — use 'heapo open'");
+                        return null;
+                    }
+                }
+                case DslParser.ThatSource ignored -> {
+                    System.err.println("Error: THAT requires a session — use 'heapo open'");
+                    return null;
+                }
             }
 
-            var cs = (DslParser.ClassSource) p.source();
-            BitSet b = QueryEngine.buildBitSet(heap, reg, cs.className());
-            String contextClass = cs.className().equals("*") ? null : cs.className();
-
             for (var filter : p.filters()) {
-                if (filter instanceof DslParser.OfTypeFilter f) contextClass = f.className();
-                if (filter instanceof DslParser.RetainingFilter f) {
-                    BitSet result = new BitSet(heap.objectCount());
-                    try (var rs = reg.openRetainedSize()) {
-                        for (int v = b.nextSetBit(0); v >= 0; v = b.nextSetBit(v + 1)) {
-                            long size = rs.readLong(v);
-                            boolean ok = switch (f.op()) {
-                                case ">"  -> size >  f.size();
-                                case ">=" -> size >= f.size();
-                                case "<"  -> size <  f.size();
-                                case "<=" -> size <= f.size();
-                                case "="  -> size == f.size();
-                                default   -> false;
-                            };
-                            if (ok) result.set(v);
-                        }
+                switch (filter) {
+                    case DslParser.OfTypeFilter f -> {
+                        contextClass = f.className();
+                        BitSet typeBits = QueryEngine.buildOfTypeBitSet(heap, reg, f.className(), f.exactly());
+                        b.and(typeBits);
                     }
-                    b = result;
-                } else if (filter instanceof DslParser.OfTypeFilter f) {
-                    BitSet typeBits = QueryEngine.buildOfTypeBitSet(heap, reg, f.className(), f.exactly());
-                    b.and(typeBits);
-                } else if (filter instanceof DslParser.WhereFilter f && contextClass != null) {
-                    var nameIdx = ClassNameIndex.load(heap);
-                    int cid = nameIdx.resolve(contextClass);
-                    if (cid >= 0) {
-                        long val = f.rawValue().equalsIgnoreCase("true")  ? 1L
-                                 : f.rawValue().equalsIgnoreCase("false") ? 0L
-                                 : Long.parseLong(f.rawValue());
-                        b = QueryEngine.buildWhereFilterBitSet(heap, reg, b, cid,
-                                f.field(), f.op(), val);
+                    case DslParser.RetainingFilter f -> {
+                        BitSet result = new BitSet(heap.objectCount());
+                        try (var rs = reg.openRetainedSize()) {
+                            for (int v = b.nextSetBit(0); v >= 0; v = b.nextSetBit(v + 1)) {
+                                long size = rs.readLong(v);
+                                boolean ok = switch (f.op()) {
+                                    case ">"  -> size >  f.size();
+                                    case ">=" -> size >= f.size();
+                                    case "<"  -> size <  f.size();
+                                    case "<=" -> size <= f.size();
+                                    case "="  -> size == f.size();
+                                    default   -> false;
+                                };
+                                if (ok) result.set(v);
+                            }
+                        }
+                        b = result;
+                    }
+                    case DslParser.SizedFilter f -> {
+                        BitSet result = new BitSet(heap.objectCount());
+                        try (var ss = reg.openShallowSize()) {
+                            for (int v = b.nextSetBit(0); v >= 0; v = b.nextSetBit(v + 1)) {
+                                long size = (long) ss.readInt(v) * 8L;
+                                boolean ok = switch (f.op()) {
+                                    case ">"  -> size >  f.size();
+                                    case ">=" -> size >= f.size();
+                                    case "<"  -> size <  f.size();
+                                    case "<=" -> size <= f.size();
+                                    case "="  -> size == f.size();
+                                    default   -> false;
+                                };
+                                if (ok) result.set(v);
+                            }
+                        }
+                        b = result;
+                    }
+                    case DslParser.InFilter f -> {
+                        BitSet other = resolveBuiltinOrError(f.name(), heap, reg);
+                        if (other == null) return null;
+                        b.and(other);
+                    }
+                    case DslParser.NotInFilter f -> {
+                        BitSet other = resolveBuiltinOrError(f.name(), heap, reg);
+                        if (other == null) return null;
+                        b.andNot(other);
+                    }
+                    case DslParser.RetainedByFilter f -> {
+                        BitSet retainerBits = resolveBuiltinOrError(f.name(), heap, reg);
+                        if (retainerBits == null) return null;
+                        b.and(QueryEngine.buildRetainedByBitSet(heap, reg, retainerBits));
+                    }
+                    case DslParser.ReferencingFilter f -> {
+                        BitSet targetBits = resolveBuiltinOrError(f.name(), heap, reg);
+                        if (targetBits == null) return null;
+                        b.and(QueryEngine.buildReferencingBitSet(heap, reg, targetBits));
+                    }
+                    case DslParser.ReferencedByFilter f -> {
+                        BitSet sourceBits = resolveBuiltinOrError(f.name(), heap, reg);
+                        if (sourceBits == null) return null;
+                        b.and(QueryEngine.buildReferencedByBitSet(heap, reg, sourceBits));
+                    }
+                    case DslParser.ReachableFromFilter f -> {
+                        BitSet seedBits = resolveBuiltinOrError(f.name(), heap, reg);
+                        if (seedBits == null) return null;
+                        b.and(QueryEngine.buildReachableFromBitSet(heap, reg, seedBits));
+                    }
+                    case DslParser.WhereFilter f -> {
+                        if (contextClass != null) {
+                            var nameIdx = ClassNameIndex.load(heap);
+                            int cid = nameIdx.resolve(contextClass);
+                            if (cid >= 0) {
+                                long val = f.rawValue().equalsIgnoreCase("true")  ? 1L
+                                         : f.rawValue().equalsIgnoreCase("false") ? 0L
+                                         : Long.parseLong(f.rawValue());
+                                b = QueryEngine.buildWhereFilterBitSet(heap, reg, b, cid,
+                                        f.field(), f.op(), val);
+                            }
+                        }
                     }
                 }
             }
@@ -352,6 +412,14 @@ public final class Main implements Runnable {
                     JsonlFormatter.formatAggregateRetainedSize("(pipeline)", t.func(),
                         QueryEngine.aggregateFromBitSet(heap, reg, b, t.func()));
             };
+        }
+
+        private static BitSet resolveBuiltinOrError(String name, UnpackedHeap heap,
+                                                     IndexRegistry reg) throws IOException {
+            BitSet bits = QueryEngine.buildBuiltinBitSet(heap, reg, name);
+            if (bits == null)
+                System.err.println("Error: '" + name + "' requires a session — use 'heapo open'");
+            return bits;
         }
     }
 
