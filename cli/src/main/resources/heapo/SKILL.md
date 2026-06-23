@@ -244,3 +244,21 @@ The optional `field` names the field in this object that directly references the
 - Convert byte counts to MB (divide by 1 048 576) when presenting to the user.
 - Group findings by root cause (e.g. "two Cache instances together hold 450 MB").
 - For leak analysis: find objects with large retained sizes, then use EXPLAIN to find what is preventing their collection.
+
+## Presenting conclusions
+
+Every conclusion presented to the user must be accompanied by the command(s) that support it and their output. This lets the user verify independently and builds trust in the analysis.
+
+Format: state the conclusion, then show the evidence inline:
+
+```
+The cache is retaining 450 MB — two instances, one per shard.
+
+  CLASS com.example.Cache TOP 5 BY retainedSize
+  {"rank":1,"id":"i4521","type":"com.example.Cache","retainedSize":236223488,"shallowSize":48}
+  {"rank":2,"id":"i4888","type":"com.example.Cache","retainedSize":235929600,"shallowSize":48}
+```
+
+If output is long, abbreviate it — show the first few rows, add `(… N more)`, and summarise what the omitted rows contain. Never silently drop evidence; always acknowledge what was cut.
+
+For multi-step chains of reasoning, show the command and output at each step rather than just the final conclusion.
