@@ -24,6 +24,20 @@ public final class Unpacker {
     private Unpacker() {}
 
     public static UnpackedHeap unpack(Path hprofFile, Path outputDir) throws IOException {
+        return unpack(hprofFile, outputDir, msg -> {});
+    }
+
+    public static UnpackedHeap unpack(Path hprofFile, Path outputDir,
+                                       java.util.function.Consumer<String> progress) throws IOException {
+        Path manifestPath = outputDir.resolve("manifest.json");
+        if (Files.exists(manifestPath)) {
+            UnpackedHeap cached = tryLoadManifest(hprofFile, outputDir, manifestPath);
+            if (cached != null) return cached;
+        }
+
+        long hprofBytes = Files.size(hprofFile);
+        progress.accept(String.format("Scanning heap dump (%.1f MB)...", hprofBytes / 1_048_576.0));
+
         Path indexDir  = outputDir.resolve("indexes");
         Path bitsetDir = outputDir.resolve("bitsets");
         Path tempDir   = outputDir.resolve("temp");
@@ -76,7 +90,9 @@ public final class Unpacker {
         writeManifest(hprofFile, objectCount, classCount, outputDir.resolve("manifest.json"));
         writeClassNames(handler.classNameIds, handler.strings, sortedRawIds, denseIds,
                         outputDir.resolve("class-names.txt"));
-        return new UnpackedHeap(outputDir, objectCount, classCount);
+        UnpackedHeap result = new UnpackedHeap(outputDir, objectCount, classCount);
+        progress.accept(String.format("  %,d objects, %,d classes", objectCount, classCount));
+        return result;
     }
 
     // ── HPROF scan handler ───────────────────────────────────────────────────
@@ -562,6 +578,46 @@ public final class Unpacker {
     }
 
     // ── Manifest ─────────────────────────────────────────────────────────────
+
+    /**
+     * Returns a cached {@link UnpackedHeap} if the manifest exists and its fingerprint
+     * matches the current HPROF file, or {@code null} if a rescan is needed.
+     */
+    private static UnpackedHeap tryLoadManifest(Path hprofFile, Path outputDir,
+                                                 Path manifestPath) throws IOException {
+        try {
+            String json = Files.readString(manifestPath);
+            String currentFp = computeFingerprint(hprofFile);
+
+            String storedFp = extractJsonString(json, "hprofFingerprint");
+            if (!currentFp.equals(storedFp)) return null;
+
+            int objectCount = extractJsonInt(json, "objectCount");
+            int classCount  = extractJsonInt(json, "classCount");
+            return new UnpackedHeap(outputDir, objectCount, classCount);
+        } catch (Exception e) {
+            return null; // corrupt or unreadable manifest — rescan
+        }
+    }
+
+    private static String extractJsonString(String json, String key) {
+        String search = "\"" + key + "\": \"";
+        int start = json.indexOf(search);
+        if (start < 0) throw new IllegalArgumentException("Key not found: " + key);
+        start += search.length();
+        int end = json.indexOf('"', start);
+        return json.substring(start, end);
+    }
+
+    private static int extractJsonInt(String json, String key) {
+        String search = "\"" + key + "\": ";
+        int start = json.indexOf(search);
+        if (start < 0) throw new IllegalArgumentException("Key not found: " + key);
+        start += search.length();
+        int end = start;
+        while (end < json.length() && Character.isDigit(json.charAt(end))) end++;
+        return Integer.parseInt(json.substring(start, end));
+    }
 
     private static void writeManifest(Path hprofFile, int objectCount, int classCount,
                                       Path manifestPath) throws IOException {
