@@ -134,15 +134,20 @@ public final class QueryEngine {
             while (cur >= 0 && cur < heap.objectCount()) {
                 int    classDid  = classOf.readInt(cur);
                 String className = names.nameOf(classDid);
-                String notes     = null;
+                int    nextCur   = idom.readInt(cur);
+                boolean isGcRoot = nextCur < 0 || nextCur >= heap.objectCount();
+
+                String notes = null;
                 if ("java.lang.Class".equals(className)) {
                     String represented = names.nameOf(cur);
                     if (!"?".equals(represented)) notes = represented + ".class";
                 }
+                if (isGcRoot) notes = notes == null ? "GC root" : notes + "; GC root";
+
                 long retainedSize = retained.readLong(cur);
                 path.add(new ExplainNode(cur, className, retainedSize, depth++, notes));
                 classDids.add(classDid);
-                cur = idom.readInt(cur); // -1 = root of dominator tree
+                cur = nextCur;
             }
 
             // Annotate each node with the field in its parent that directly references it.
