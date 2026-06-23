@@ -25,6 +25,12 @@ public final class IndexFile implements AutoCloseable {
     private static final ValueLayout.OfInt   INT_BE   = ValueLayout.JAVA_INT  .withOrder(ByteOrder.BIG_ENDIAN);
     private static final ValueLayout.OfLong  LONG_BE  = ValueLayout.JAVA_LONG .withOrder(ByteOrder.BIG_ENDIAN);
 
+    // HPROF instance-dump field values are written sequentially without alignment padding,
+    // so *At reads must not enforce alignment constraints.
+    private static final ValueLayout.OfShort SHORT_BE_UA = ValueLayout.JAVA_SHORT.withOrder(ByteOrder.BIG_ENDIAN).withByteAlignment(1);
+    private static final ValueLayout.OfInt   INT_BE_UA   = ValueLayout.JAVA_INT  .withOrder(ByteOrder.BIG_ENDIAN).withByteAlignment(1);
+    private static final ValueLayout.OfLong  LONG_BE_UA  = ValueLayout.JAVA_LONG .withOrder(ByteOrder.BIG_ENDIAN).withByteAlignment(1);
+
     private IndexFile(Arena arena, MemorySegment segment) {
         this.arena   = arena;
         this.segment = segment;
@@ -72,11 +78,11 @@ public final class IndexFile implements AutoCloseable {
     /** Read a single byte at an arbitrary byte offset (e.g. within a field-value record). */
     public byte  readByteAt(long byteOffset)  { return segment.get(BYTE_LAYOUT, byteOffset); }
     /** Read a big-endian short at an arbitrary byte offset. */
-    public short readShortAt(long byteOffset) { return segment.get(SHORT_BE, byteOffset); }
+    public short readShortAt(long byteOffset) { return segment.get(SHORT_BE_UA, byteOffset); }
     /** Read a big-endian int at an arbitrary byte offset. */
-    public int   readIntAt(long byteOffset)   { return segment.get(INT_BE, byteOffset); }
+    public int   readIntAt(long byteOffset)   { return segment.get(INT_BE_UA,   byteOffset); }
     /** Read a big-endian long at an arbitrary byte offset. */
-    public long  readLongAt(long byteOffset)  { return segment.get(LONG_BE, byteOffset); }
+    public long  readLongAt(long byteOffset)  { return segment.get(LONG_BE_UA,  byteOffset); }
 
     /** Number of int elements (byteSize / 4). */
     public long intCount()  { return segment.byteSize() / 4; }
