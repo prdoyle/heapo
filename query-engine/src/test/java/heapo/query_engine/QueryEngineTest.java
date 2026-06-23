@@ -165,7 +165,7 @@ class QueryEngineTest {
         assertInstanceOf(DslParser.StatusQuery.class,
             ((DslParser.Complete) DslParser.parse("STATUS")).action());
         assertInstanceOf(DslParser.NamesQuery.class,
-            ((DslParser.Complete) DslParser.parse("NAMES *")).action());
+            ((DslParser.Complete) DslParser.parse("NAMES")).action());
         assertInstanceOf(DslParser.ThatQuery.class,
             ((DslParser.Complete) DslParser.parse("THAT")).action());
         assertInstanceOf(DslParser.UndoQuery.class,

@@ -93,7 +93,7 @@ public final class Main implements Runnable {
           EXPLAIN i<id>                           dominator chain to GC root
 
         Session commands:
-          NAMES <glob>             show named bitsets matching glob
+          NAMES [<glob>]           show named bitsets (optionally filtered by glob)
           EXPLAIN <name>           show what command produced the named result
           CALL THAT <name>         name the last result (persists a bitset to disk)
           CALL h<id> <name>        name a specific history entry

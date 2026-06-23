@@ -320,7 +320,7 @@ public final class DslParser {
     }
 
     private static ParseResult parseNames(String[] t, int i) {
-        if (i >= t.length) return incomplete(List.of("<glob>"));
+        if (i >= t.length) return complete(new NamesQuery(null), List.of("<glob>"));
         String glob = t[i++];
         if (i < t.length) return invalid("Unexpected tokens after NAMES " + glob);
         return complete(new NamesQuery(glob), List.of());
