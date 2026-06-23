@@ -93,7 +93,7 @@ public final class Main implements Runnable {
           EXPLAIN i<id>                           dominator chain to GC root
 
         Session commands:
-          NAMES [<glob>]           show named bitsets (optionally filtered by glob)
+          NAMES [<glob>]           show named results (optionally filtered by glob)
           EXPLAIN <name>           show what command produced the named result
           CALL THAT <name>         name the last result (persists a bitset to disk)
           CALL h<id> <name>        name a specific history entry
@@ -129,8 +129,21 @@ public final class Main implements Runnable {
                 description = "Clear history and name bindings at startup (result data is kept)")
         boolean clean;
 
+        @Option(names = {"--output"},
+                description = "Output format: human (default), jsonl, json",
+                defaultValue = "human")
+        String outputFormat;
+
         @Override
         public Integer call() throws IOException, SQLException {
+            OutputFormatter.Format fmt;
+            try {
+                fmt = OutputFormatter.Format.valueOf(outputFormat.toUpperCase());
+            } catch (IllegalArgumentException e) {
+                System.err.println("Error: unknown output format '" + outputFormat + "'. Use jsonl, json, or human.");
+                return 1;
+            }
+
             Path outDir = resolveOutDir(hprofFile, heapDir);
             Files.createDirectories(outDir);
 
@@ -150,12 +163,14 @@ public final class Main implements Runnable {
                     .variable(LineReader.HISTORY_FILE, outDir.resolve("repl-history"))
                     .build();
 
+                boolean interactive = fmt == OutputFormatter.Format.HUMAN;
+
                 while (true) {
                     String line;
                     try {
                         String sigil = session.thatSigil();
                         String prompt = sigil.isEmpty() ? "heapo> " : "heapo " + sigil + "> ";
-                        line = reader.readLine(prompt);
+                        line = reader.readLine(interactive ? prompt : "");
                     } catch (EndOfFileException | UserInterruptException e) {
                         break;
                     }
@@ -163,26 +178,29 @@ public final class Main implements Runnable {
                     String trimmed = line.strip();
                     if (trimmed.equalsIgnoreCase("exit") || trimmed.equalsIgnoreCase("quit")) break;
                     if (trimmed.equalsIgnoreCase("help") || trimmed.equalsIgnoreCase("?")) {
-                        System.out.print(REPL_HELP);
+                        if (interactive) System.out.print(REPL_HELP);
                         continue;
                     }
                     if (trimmed.isEmpty()) {
-                        // Blank input: re-display THAT (handy for reviewing last result)
-                        try {
-                            String output = session.execute("THAT");
-                            if (!output.contains("\"error\"") && !output.isEmpty()) {
-                                System.out.print(OutputFormatter.convert(output, OutputFormatter.Format.HUMAN));
-                                System.out.println();
-                            }
-                        } catch (Exception ignored) {}
+                        if (interactive) {
+                            // Blank input: re-display THAT (handy for reviewing last result)
+                            try {
+                                String output = session.execute("THAT");
+                                if (!output.contains("\"error\"") && !output.isEmpty()) {
+                                    System.out.print(OutputFormatter.convert(output, fmt));
+                                    System.out.println();
+                                }
+                            } catch (Exception ignored) {}
+                        }
                         continue;
                     }
 
                     try {
                         String output = session.execute(trimmed);
                         if (!output.isEmpty()) {
-                            System.out.print(OutputFormatter.convert(output, OutputFormatter.Format.HUMAN));
-                            System.out.println(); // blank line separator after each result
+                            System.out.print(OutputFormatter.convert(output, fmt));
+                            if (interactive) System.out.println(); // blank line separator
+                            System.out.flush();
                         }
                     } catch (Exception e) {
                         System.err.println("Error: " + e.getMessage());

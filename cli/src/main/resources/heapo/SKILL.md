@@ -29,53 +29,51 @@ The REPL prompt shows the current result type and ID: `heapo s42>` means THAT is
 
 ## Workflow
 
-**Prefer `heapo open` over `heapo query` for all multi-step analysis.** `heapo open` gives you a stateful session: `CALL THAT`, named results, `THAT` as a source, and `IN <name>` all require a live session. Use `heapo query` only for truly one-shot lookups.
-
-For agent/LLM use, pipe commands into `heapo open` via stdin with `--output jsonl`:
+**Always use `heapo open --output jsonl` with a heredoc for multi-step analysis.** This gives you a stateful session (CALL THAT, named results, THAT as a source) and machine-readable output. Each command goes on its own line; output for each command follows immediately before the next command runs.
 
 ```bash
-printf 'STATUS\nCLASSES\n' | heapo open --output jsonl DUMP
+heapo open --output jsonl DUMP << 'EOF'
+STATUS
+TOP 10 BY retainedSize
+EOF
 ```
 
-Or for a longer investigation:
-
-```bash
-{
-  echo "TOP 20 BY retainedSize"
-  echo "CALL THAT bigLeakers"
-  echo "bigLeakers RETAINED BY i1234 TOP 10 BY retainedSize"
-} | heapo open --output jsonl DUMP
-```
-
-Each command's output appears on stdout as JSONL; read it line by line.
+Use `heapo query` only for truly one-shot lookups when no session state is needed.
 
 Replace `DUMP` with the actual path to the `.hprof` file in all commands below.
 
 ### 1. Orient
 
 ```bash
-printf 'STATUS\nCLASSES\n' | heapo open --output jsonl DUMP
+heapo open --output jsonl DUMP << 'EOF'
+STATUS
+CLASSES heapo.*
+EOF
 ```
 
 ### 2. Find the biggest memory consumers
 
 ```bash
-printf 'TOP 20 BY retainedSize\n' | heapo open --output jsonl DUMP
+heapo open --output jsonl DUMP << 'EOF'
+TOP 20 BY retainedSize
+EOF
 ```
 
 Identify the classes contributing the most retained memory, then drill in:
 
 ```bash
-{
-  echo "CLASS com.example.Foo TOP 10 BY retainedSize"
-  echo "CLASS com.example.Foo SUM retainedSize"
-} | heapo open --output jsonl DUMP
+heapo open --output jsonl DUMP << 'EOF'
+CLASS com.example.Foo TOP 10 BY retainedSize
+CLASS com.example.Foo SUM retainedSize
+EOF
 ```
 
 ### 3. Trace what is holding an object in memory
 
 ```bash
-printf 'EXPLAIN i<id>\n' | heapo open --output jsonl DUMP
+heapo open --output jsonl DUMP << 'EOF'
+EXPLAIN i<id>
+EOF
 ```
 
 Each line is the immediate dominator — the object that, if collected, would free everything below it. Walk the chain upward to find the GC root preventing collection. The optional `field` names the field in this object that directly references the object on the prior line.
@@ -83,7 +81,9 @@ Each line is the immediate dominator — the object that, if collected, would fr
 ### 4. Explore a dominator subtree
 
 ```bash
-printf 'ALL RETAINED BY i<id> TOP 20 BY retainedSize\n' | heapo open --output jsonl DUMP
+heapo open --output jsonl DUMP << 'EOF'
+ALL RETAINED BY i<id> TOP 20 BY retainedSize
+EOF
 ```
 
 Shows all objects exclusively retained by `i<id>`, sorted by retained size.
@@ -91,11 +91,11 @@ Shows all objects exclusively retained by `i<id>`, sorted by retained size.
 ### 5. Save and reuse results across queries
 
 ```bash
-{
-  echo "CLASS com.example.Cache TOP 10 BY retainedSize"
-  echo "CALL THAT caches"
-  echo "ALL RETAINED BY i<id> IN caches TOP 10 BY retainedSize"
-} | heapo open --output jsonl DUMP
+heapo open --output jsonl DUMP << 'EOF'
+CLASS com.example.Cache TOP 10 BY retainedSize
+CALL THAT caches
+ALL RETAINED BY i<id> IN caches TOP 10 BY retainedSize
+EOF
 ```
 
 `CALL THAT <name>` saves the current result under a name you choose. Use it in subsequent `IN <name>`, `RETAINED BY <name>`, or other filter arguments within the same session.
@@ -103,7 +103,9 @@ Shows all objects exclusively retained by `i<id>`, sorted by retained size.
 ### 6. Filter by size threshold
 
 ```bash
-printf 'CLASS java.lang.String RETAINING > 100000\n' | heapo open --output jsonl DUMP
+heapo open --output jsonl DUMP << 'EOF'
+CLASS java.lang.String RETAINING > 100000
+EOF
 ```
 
 ## Full DSL reference
@@ -119,7 +121,7 @@ The result is always stored as a bitset in THAT. Display options control what is
 | Source | Description |
 |---|---|
 | `ALL` | All objects |
-| `CLASS <class>` | All instances of a class (`*` and `?` wildcards supported) |
+| `CLASS <class>` | All instances of a class (`*` wildcard supported) |
 | `THAT` | Current result |
 | `i<n>` | Singleton: just object `i<n>` |
 | `<name>` | Named result (from `CALL THAT`) or built-in name |
@@ -172,7 +174,7 @@ ALL RETAINED BY i123 REFERENCING i456 TOP 10
 ```
 CLASS com.example.Foo                              # all Foo instances
 CLASS com.example.Foo TOP 10 BY retainedSize       # top 10 Foos
-ALL TOP 20 BY retainedSize                         # top 20 across all classes
+TOP 20 BY retainedSize                             # top 20 across all classes
 ALL RETAINED BY i1234 TOP 10                       # dominator subtree of i1234
 Threads REFERENCING i456                           # threads that hold i456
 ALL IN suspects NOT IN excluded TOP 20             # set difference
@@ -187,7 +189,7 @@ i1234 TOP 1                                        # inspect one object
 |---|---|
 | `STATUS` | Object and class count |
 | `CLASSES <glob>` | Classes matching glob, sorted by instance count (use `*` for all) |
-| `NAMES [<glob>]` | Named bitset results; glob filters by name (omit for all) |
+| `NAMES [<glob>]` | Named results; glob filters by name (omit for all) |
 | `EXPLAIN <name>` | Show which history command produced the named result (provenance) |
 | `EXPLAIN i<id>` | Dominator chain from object to GC root |
 
@@ -198,6 +200,8 @@ i1234 TOP 1                                        # inspect one object
 | `--output human` | Default; aligned table for human reading |
 | `--output jsonl` | One JSON object per line — use this as an LLM |
 | `--output json` | Full JSON array |
+
+Both `heapo open` and `heapo query` accept `--output`.
 
 ## JSONL field reference
 
