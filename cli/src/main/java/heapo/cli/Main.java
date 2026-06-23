@@ -2,6 +2,7 @@ package heapo.cli;
 
 import heapo.indexes.IndexRegistry;
 import heapo.query_engine.*;
+import heapo.session.SessionDb;
 import heapo.unpack.Unpacker;
 import heapo.unpack.UnpackedHeap;
 import org.jline.reader.*;
@@ -11,6 +12,8 @@ import picocli.CommandLine;
 import picocli.CommandLine.*;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.sql.SQLException;
@@ -230,18 +233,26 @@ public final class Main implements Runnable {
 
             String queryStr = String.join(" ", queryTokens);
 
-            String jsonl = switch (DslParser.parse(queryStr)) {
-                case DslParser.Invalid e -> {
-                    System.err.println("Error: " + e.message());
-                    yield null;
-                }
-                case DslParser.Incomplete i -> {
-                    System.err.println("Error: incomplete query; expected: "
-                        + String.join(", ", i.completions()));
-                    yield null;
-                }
-                case DslParser.Complete c -> executeQueryCommand(c.action(), heap, reg);
-            };
+            Path dbPath = outDir.resolve("sql.db");
+            SessionDb sessionDb = Files.exists(dbPath) ? SessionDb.open(dbPath) : null;
+
+            String jsonl;
+            try {
+                jsonl = switch (DslParser.parse(queryStr)) {
+                    case DslParser.Invalid e -> {
+                        System.err.println("Error: " + e.message());
+                        yield null;
+                    }
+                    case DslParser.Incomplete i -> {
+                        System.err.println("Error: incomplete query; expected: "
+                            + String.join(", ", i.completions()));
+                        yield null;
+                    }
+                    case DslParser.Complete c -> executeQueryCommand(c.action(), heap, reg, sessionDb);
+                };
+            } finally {
+                if (sessionDb != null) sessionDb.close();
+            }
 
             if (jsonl == null) return 1;
 
@@ -258,7 +269,8 @@ public final class Main implements Runnable {
 
         private static String executeQueryCommand(DslParser.Query q,
                                                    UnpackedHeap heap,
-                                                   IndexRegistry reg) throws IOException {
+                                                   IndexRegistry reg,
+                                                   SessionDb sessionDb) throws IOException, SQLException {
             return switch (q) {
                 case DslParser.StatusQuery ignored ->
                     "{\"objectCount\":" + heap.objectCount()
@@ -274,7 +286,7 @@ public final class Main implements Runnable {
                     JsonlFormatter.formatTopN(
                         QueryEngine.dominatorSubtree(heap, reg, ds.denseId(), ds.topN()));
 
-                case DslParser.Pipeline p -> executePipelineQuery(p, heap, reg);
+                case DslParser.Pipeline p -> executePipelineQuery(p, heap, reg, sessionDb);
 
                 default -> {
                     System.err.println(
@@ -287,7 +299,8 @@ public final class Main implements Runnable {
 
         private static String executePipelineQuery(DslParser.Pipeline p,
                                                     UnpackedHeap heap,
-                                                    IndexRegistry reg) throws IOException {
+                                                    IndexRegistry reg,
+                                                    SessionDb sessionDb) throws IOException, SQLException {
             // Resolve source
             BitSet b;
             String contextClass = null;
@@ -297,12 +310,8 @@ public final class Main implements Runnable {
                     contextClass = cs.className().equals("*") ? null : cs.className();
                 }
                 case DslParser.NameSource ns -> {
-                    b = QueryEngine.buildBuiltinBitSet(heap, reg, ns.name());
-                    if (b == null) {
-                        System.err.println(
-                            "Error: '" + ns.name() + "' requires a session — use 'heapo open'");
-                        return null;
-                    }
+                    b = resolveNameOrError(ns.name(), heap, reg, sessionDb);
+                    if (b == null) return null;
                 }
                 case DslParser.ThatSource ignored -> {
                     System.err.println("Error: THAT requires a session — use 'heapo open'");
@@ -354,32 +363,32 @@ public final class Main implements Runnable {
                         b = result;
                     }
                     case DslParser.InFilter f -> {
-                        BitSet other = resolveBuiltinOrError(f.name(), heap, reg);
+                        BitSet other = resolveNameOrError(f.name(), heap, reg, sessionDb);
                         if (other == null) return null;
                         b.and(other);
                     }
                     case DslParser.NotInFilter f -> {
-                        BitSet other = resolveBuiltinOrError(f.name(), heap, reg);
+                        BitSet other = resolveNameOrError(f.name(), heap, reg, sessionDb);
                         if (other == null) return null;
                         b.andNot(other);
                     }
                     case DslParser.RetainedByFilter f -> {
-                        BitSet retainerBits = resolveBuiltinOrError(f.name(), heap, reg);
+                        BitSet retainerBits = resolveNameOrError(f.name(), heap, reg, sessionDb);
                         if (retainerBits == null) return null;
                         b.and(QueryEngine.buildRetainedByBitSet(heap, reg, retainerBits));
                     }
                     case DslParser.ReferencingFilter f -> {
-                        BitSet targetBits = resolveBuiltinOrError(f.name(), heap, reg);
+                        BitSet targetBits = resolveNameOrError(f.name(), heap, reg, sessionDb);
                         if (targetBits == null) return null;
                         b.and(QueryEngine.buildReferencingBitSet(heap, reg, targetBits));
                     }
                     case DslParser.ReferencedByFilter f -> {
-                        BitSet sourceBits = resolveBuiltinOrError(f.name(), heap, reg);
+                        BitSet sourceBits = resolveNameOrError(f.name(), heap, reg, sessionDb);
                         if (sourceBits == null) return null;
                         b.and(QueryEngine.buildReferencedByBitSet(heap, reg, sourceBits));
                     }
                     case DslParser.ReachableFromFilter f -> {
-                        BitSet seedBits = resolveBuiltinOrError(f.name(), heap, reg);
+                        BitSet seedBits = resolveNameOrError(f.name(), heap, reg, sessionDb);
                         if (seedBits == null) return null;
                         b.and(QueryEngine.buildReachableFromBitSet(heap, reg, seedBits));
                     }
@@ -414,12 +423,44 @@ public final class Main implements Runnable {
             };
         }
 
-        private static BitSet resolveBuiltinOrError(String name, UnpackedHeap heap,
-                                                     IndexRegistry reg) throws IOException {
+        private static BitSet resolveNameOrError(String name, UnpackedHeap heap,
+                                                   IndexRegistry reg,
+                                                   SessionDb sessionDb) throws IOException, SQLException {
             BitSet bits = QueryEngine.buildBuiltinBitSet(heap, reg, name);
-            if (bits == null)
-                System.err.println("Error: '" + name + "' requires a session — use 'heapo open'");
-            return bits;
+            if (bits != null) return bits;
+
+            if (sessionDb != null) {
+                var histIdOpt = sessionDb.names().resolve(name);
+                if (histIdOpt.isPresent()) {
+                    var entry = sessionDb.history().findById(histIdOpt.get());
+                    if (entry.isPresent()) {
+                        if (entry.get().bitsetFile() != null) {
+                            return loadBitSet(heap.bitsetsDir().resolve(entry.get().bitsetFile()));
+                        }
+                        if (entry.get().sqlTable() != null) {
+                            System.err.println("Error: '" + name
+                                + "' is a table result, not a bitset — query it with SQL SELECT");
+                            return null;
+                        }
+                        System.err.println("Error: '" + name
+                            + "' was not persisted. Use CALL THAT <name> in an interactive session first.");
+                        return null;
+                    }
+                }
+            }
+
+            System.err.println(sessionDb == null
+                ? "Error: '" + name + "' requires a session — use 'heapo open'"
+                : "Error: unknown name '" + name + "'");
+            return null;
+        }
+
+        private static BitSet loadBitSet(Path path) throws IOException {
+            byte[] bytes = Files.readAllBytes(path);
+            ByteBuffer buf = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
+            long[] words = new long[bytes.length / 8];
+            buf.asLongBuffer().get(words);
+            return BitSet.valueOf(words);
         }
     }
 
