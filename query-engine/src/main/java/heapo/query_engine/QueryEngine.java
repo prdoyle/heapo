@@ -397,6 +397,28 @@ public final class QueryEngine {
      * If {@code topN > 0}, only the top-N by retained size are returned; otherwise all.
      * Results are sorted by retained size descending.
      */
+    public static BitSet dominatorSubtreeBitSet(UnpackedHeap heap, IndexRegistry registry,
+                                                  int rootDenseId) throws IOException {
+        int objectCount = heap.objectCount();
+        var children = new ArrayList<List<Integer>>(objectCount);
+        for (int i = 0; i < objectCount; i++) children.add(new ArrayList<>());
+        try (var idom = registry.openIdom()) {
+            for (int v = 0; v < objectCount; v++) {
+                int parent = idom.readInt(v);
+                if (parent >= 0 && parent < objectCount) children.get(parent).add(v);
+            }
+        }
+        BitSet bits = new BitSet(objectCount);
+        var queue = new ArrayDeque<Integer>();
+        queue.add(rootDenseId);
+        while (!queue.isEmpty()) {
+            int cur = queue.poll();
+            bits.set(cur);
+            queue.addAll(children.get(cur));
+        }
+        return bits;
+    }
+
     public static List<TopNRow> dominatorSubtree(UnpackedHeap heap, IndexRegistry registry,
                                                    int rootDenseId, int topN) throws IOException {
         var names       = ClassNameIndex.load(heap);

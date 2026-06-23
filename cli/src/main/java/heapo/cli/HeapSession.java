@@ -123,13 +123,10 @@ public final class HeapSession implements AutoCloseable {
             }
             case DslParser.DominatorSubtree ds -> {
                 int histId = history.record(rawCmd, System.currentTimeMillis());
-                List<TopNRow> rows =
-                    QueryEngine.dominatorSubtree(heap, registry, ds.denseId(), ds.topN());
-                String tableName = tables.writeTopNResult(rows);
-                history.setSqlTable(histId, tableName);
-                that = new TableAnswer(tableName, rows.size());
+                BitSet bits = QueryEngine.dominatorSubtreeBitSet(heap, registry, ds.denseId());
+                that = new BitSetAnswer(bits, heap.objectCount());
                 thatHistId = histId;
-                yield JsonlFormatter.formatTopN(rows);
+                yield displayBitSet(bits);
             }
         };
     }

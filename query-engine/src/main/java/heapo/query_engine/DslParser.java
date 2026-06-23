@@ -75,7 +75,7 @@ public final class DslParser {
     public record StatusQuery()                              implements Query {}
     public record ClassesQuery(String glob)                  implements Query {}  // null = all
     public record ExplainQuery(int denseId)                  implements Query {}
-    public record DominatorSubtree(int denseId, int topN)    implements Query {}  // topN=-1 = all
+    public record DominatorSubtree(int denseId)               implements Query {}
 
     // Session commands
     public record NamesQuery(String glob)                    implements Query {}  // null = all
@@ -368,22 +368,8 @@ public final class DslParser {
         if (!isObjRef(t[i])) return invalid("Expected i<n> after RETAINED BY, got: " + t[i]);
         int denseId = Integer.parseInt(t[i].substring(1));
         i++;
-        if (i >= t.length) return complete(new DominatorSubtree(denseId, 10), List.of("TOP"));
-        if (!eq(t[i], "TOP")) return invalid("Expected TOP or end of input after RETAINED BY " + t[i-1] + ", got: " + t[i]);
-        i++;
-        if (i >= t.length) return incomplete(List.of("<n>"));
-        int n = parseInt(t[i]);
-        if (n < 0) return invalid("Expected positive integer after TOP, got: " + t[i]);
-        i++;
-        if (i >= t.length) return complete(new DominatorSubtree(denseId, n), List.of("BY"));
-        if (eq(t[i], "BY")) {
-            i++;
-            if (i >= t.length) return incomplete(List.of("retainedSize"));
-            if (!eq(t[i], "retainedSize")) return invalid("Expected retainedSize after BY, got: " + t[i]);
-            i++;
-        }
-        if (i < t.length) return invalid("Unexpected tokens: " + t[i]);
-        return complete(new DominatorSubtree(denseId, n), List.of());
+        if (i < t.length) return invalid("Unexpected tokens after RETAINED BY i<n>: " + t[i]);
+        return complete(new DominatorSubtree(denseId), List.of());
     }
 
     // ── Session commands ──────────────────────────────────────────────────────

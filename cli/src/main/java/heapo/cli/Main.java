@@ -284,7 +284,7 @@ public final class Main implements Runnable {
 
                 case DslParser.DominatorSubtree ds ->
                     JsonlFormatter.formatTopN(
-                        QueryEngine.dominatorSubtree(heap, reg, ds.denseId(), ds.topN()));
+                        QueryEngine.dominatorSubtree(heap, reg, ds.denseId(), 10));
 
                 case DslParser.Pipeline p -> executePipelineQuery(p, heap, reg, sessionDb);
 
