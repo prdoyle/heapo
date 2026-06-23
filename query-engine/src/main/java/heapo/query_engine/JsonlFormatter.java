@@ -47,6 +47,8 @@ public final class JsonlFormatter {
               .append(",\"id\":\"i").append(node.denseId()).append('"')
               .append(",\"type\":\"").append(esc(node.className())).append('"')
               .append(",\"retainedSize\":").append(node.retainedSize());
+            if (node.description() != null)
+                sb.append(",\"description\":\"").append(esc(node.description())).append('"');
             if (node.notes() != null)
                 sb.append(",\"notes\":\"").append(esc(node.notes())).append('"');
             if (node.via() != null)

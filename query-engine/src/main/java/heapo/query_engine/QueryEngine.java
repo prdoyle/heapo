@@ -120,10 +120,12 @@ public final class QueryEngine {
      */
     public static List<ExplainNode> explain(UnpackedHeap heap, IndexRegistry registry,
                                              int denseId) throws IOException {
-        var names      = ClassNameIndex.load(heap);
-        var path       = new ArrayList<ExplainNode>();
-        var classDids  = new ArrayList<Integer>();
+        var names        = ClassNameIndex.load(heap);
+        var path         = new ArrayList<ExplainNode>();
+        var classDids    = new ArrayList<Integer>();
         byte[] gcRootTypeMap = registry.loadGcRootTypeMap();
+
+        boolean hasStrings = false;
 
         try (var idom     = registry.openIdom();
              var retained = registry.openRetainedSize();
@@ -138,18 +140,17 @@ public final class QueryEngine {
                 int    nextCur   = idom.readInt(cur);
                 boolean isGcRoot = nextCur < 0 || nextCur >= heap.objectCount();
 
-                String notes = null;
+                String description = null;
                 if ("java.lang.Class".equals(className)) {
                     String represented = names.nameOf(cur);
-                    if (!"?".equals(represented)) notes = represented + ".class";
+                    if (!"?".equals(represented)) description = represented + ".class";
                 }
-                if (isGcRoot) {
-                    String gcRootLabel = gcRootTypeLabel(gcRootTypeMap, cur);
-                    notes = notes == null ? gcRootLabel : notes + "; " + gcRootLabel;
-                }
+                if ("java.lang.String".equals(className)) hasStrings = true;
+
+                String notes = isGcRoot ? gcRootTypeLabel(gcRootTypeMap, cur) : null;
 
                 long retainedSize = retained.readLong(cur);
-                path.add(new ExplainNode(cur, className, retainedSize, depth++, notes));
+                path.add(new ExplainNode(cur, className, retainedSize, depth++, description, notes, null));
                 classDids.add(classDid);
                 cur = nextCur;
             }
@@ -157,9 +158,9 @@ public final class QueryEngine {
             // Annotate each node with the field in its parent that directly references it.
             // path[i] is the child, path[i+1] is the parent (dominator).
             for (int i = 0; i < path.size() - 1; i++) {
-                int    childId       = path.get(i).denseId();
-                int    parentId      = path.get(i + 1).denseId();
-                String parentClass   = path.get(i + 1).className();
+                int    childId        = path.get(i).denseId();
+                int    parentId       = path.get(i + 1).denseId();
+                String parentClass    = path.get(i + 1).className();
                 int    parentClassDid = classDids.get(i + 1);
 
                 long start  = fwd.start(parentId);
@@ -180,9 +181,29 @@ public final class QueryEngine {
 
                 ExplainNode node = path.get(i);
                 path.set(i, new ExplainNode(node.denseId(), node.className(),
-                                             node.retainedSize(), node.depth(), node.notes(), via));
+                                             node.retainedSize(), node.depth(),
+                                             node.description(), node.notes(), via));
             }
         }
+
+        // Fill in String descriptions
+        if (hasStrings && registry.hasPrimArrayIndex()) {
+            try (var fwd         = registry.openForwardRefs();
+                 var primOffsets = registry.openPrimArrayOffsets();
+                 var primData    = registry.openPrimArrayData()) {
+                for (int i = 0; i < path.size(); i++) {
+                    ExplainNode node = path.get(i);
+                    if ("java.lang.String".equals(node.className()) && node.description() == null) {
+                        String content = readStringContent(node.denseId(), fwd, primOffsets, primData);
+                        if (content != null)
+                            path.set(i, new ExplainNode(node.denseId(), node.className(),
+                                                         node.retainedSize(), node.depth(),
+                                                         content, node.notes(), node.via()));
+                    }
+                }
+            }
+        }
+
         return path;
     }
 
