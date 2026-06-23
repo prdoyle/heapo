@@ -251,12 +251,12 @@ Every conclusion presented to the user must be accompanied by the command(s) tha
 
 Show only the DSL commands — not the full `heapo open` invocation — since the user already has the dump open and can run them directly. Obtain human-readable output by running a separate `--output human` invocation yourself; do not show raw JSONL to the user.
 
-Format: state the conclusion, then show the evidence inline:
+Format: state the conclusion, then show the evidence inline. Prefix each command with `heapo>` for clarity:
 
 ```
 The cache is retaining 450 MB — two instances, one per shard.
 
-  CLASS com.example.Cache TOP 5 BY retainedSize
+  heapo> CLASS com.example.Cache TOP 5 BY retainedSize
    rank  id      type                retained   shallow
       1  i4521   com.example.Cache   225.1 MB    48 B
       2  i4888   com.example.Cache   224.8 MB    48 B
