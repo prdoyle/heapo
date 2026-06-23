@@ -4,8 +4,10 @@ import java.io.BufferedInputStream;
 import java.io.DataInputStream;
 import java.io.EOFException;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.zip.GZIPInputStream;
 
 /**
  * Streaming HPROF binary format reader. Parses records one at a time and
@@ -62,7 +64,14 @@ public final class HprofReader {
     }
 
     public void read(HprofHandler handler) throws IOException {
-        try (var raw = new BufferedInputStream(Files.newInputStream(hprofPath), 1 << 20)) {
+        boolean isGzip;
+        try (var probe = Files.newInputStream(hprofPath)) {
+            byte[] magic = probe.readNBytes(2);
+            isGzip = magic.length == 2 && (magic[0] & 0xFF) == 0x1f && (magic[1] & 0xFF) == 0x8b;
+        }
+        try (InputStream fileIn = Files.newInputStream(hprofPath)) {
+        InputStream decompressed = isGzip ? new GZIPInputStream(fileIn) : fileIn;
+        try (var raw = new BufferedInputStream(decompressed, 1 << 20)) {
             var in = new CountingInputStream(raw);
             readHeader(in, handler);
             while (true) {
@@ -83,6 +92,7 @@ public final class HprofReader {
                     default -> in.skipNBytes(length);
                 }
             }
+        }
         }
     }
 
