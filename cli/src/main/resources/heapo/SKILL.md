@@ -41,7 +41,7 @@ Or for a longer investigation:
 
 ```bash
 {
-  echo "ALL TOP 20 BY retainedSize"
+  echo "TOP 20 BY retainedSize"
   echo "CALL THAT bigLeakers"
   echo "bigLeakers RETAINED BY i1234 TOP 10 BY retainedSize"
 } | heapo open --output jsonl DUMP
@@ -60,7 +60,7 @@ printf 'STATUS\nCLASSES\n' | heapo open --output jsonl DUMP
 ### 2. Find the biggest memory consumers
 
 ```bash
-printf 'ALL TOP 20 BY retainedSize\n' | heapo open --output jsonl DUMP
+printf 'TOP 20 BY retainedSize\n' | heapo open --output jsonl DUMP
 ```
 
 Identify the classes contributing the most retained memory, then drill in:

@@ -92,7 +92,7 @@ public final class DslParser {
     private static final Set<String> OPS = Set.of(">", ">=", "<", "<=", "=");
 
     private static final List<String> TOP_LEVEL = List.of(
-        "ALL", "CLASS", "THAT",
+        "ALL", "CLASS", "THAT", "TOP", "BOTTOM",
         "GcRoots", "Threads", "ClassLoaders", "SoftReferences", "WeakReferences", "PhantomReferences",
         "STATUS", "CLASSES", "NAMES", "EXPLAIN",
         "HISTORY", "CALL", "FORGET", "UNDO"
@@ -133,6 +133,8 @@ public final class DslParser {
             case "UNDO"    -> exactly1(t, new UndoQuery());
             case "CLASS"   -> parseClassPipeline(t, 1);
             case "ALL"     -> parsePipeline(new NameSource("All"), t, 1);
+            case "TOP"     -> parseTerminalSuffix("TOP",    new NameSource("All"), List.of(), t, 1);
+            case "BOTTOM"  -> parseTerminalSuffix("BOTTOM", new NameSource("All"), List.of(), t, 1);
             case "THAT"    -> t.length == 1
                 ? complete(new ThatQuery(), FILTER_OR_TERMINAL)
                 : parsePipeline(new ThatSource(), t, 1);

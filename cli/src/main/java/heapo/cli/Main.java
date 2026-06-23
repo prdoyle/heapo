@@ -86,6 +86,8 @@ public final class Main implements Runnable {
           (no display)                            show top 10 by retained size
 
         Other queries:
+          TOP <n> [BY retainedSize]               largest-N across all objects (shorthand for ALL TOP <n>)
+          BOTTOM <n> [BY retainedSize]            smallest-N across all objects
           STATUS                                  object and class counts
           CLASSES <glob>                          classes matching glob, sorted by instance count
           EXPLAIN i<id>                           dominator chain to GC root
