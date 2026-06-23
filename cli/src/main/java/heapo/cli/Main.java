@@ -53,8 +53,8 @@ public final class Main implements Runnable {
         Sigils: i<n> = heap object instance, s<n> = set (bitset) result, h<n> = history entry.
         The prompt shows the current result type and ID, e.g. heapo s42>.
 
-        Grammar:  <source> [<filter>...] [<display>]
-        A source is itself filterable: ALL RETAINED BY i123 REFERENCING i456 TOP 10
+        Grammar:  <source> [<filter>...] [<terminal>]
+        A source is itself filterable: ALL RETAINED BY i123 REFERENCING i456 SHOW 10
 
         Sources (produce a bitset):
           ALL                                     all objects
@@ -77,17 +77,17 @@ public final class Main implements Runnable {
           REACHABLE FROM <source>                 keep objects transitively reachable from any object in source
           WHERE <field> <op> <value>              keep objects whose primitive field satisfies comparison (>, >=, <, <=, =)
 
-        Display options (result is always stored as a bitset in THAT):
-          TOP <n> [BY retainedSize]               show largest-N objects
-          BOTTOM <n> [BY retainedSize]            show smallest-N objects
+        Terminals:
+          TOP <n> [BY retainedSize]               narrow THAT to the N largest objects and display them
+          SHOW <n> [BY retainedSize]              display N largest without changing THAT
           COUNT                                   total count
           MAX retainedSize                        max retained size
           SUM retainedSize                        total retained size
-          (no display)                            show top 10 by retained size
+          (none)                                  display top 10 by retained size
 
         Other queries:
           TOP <n> [BY retainedSize]               largest-N across all objects (shorthand for ALL TOP <n>)
-          BOTTOM <n> [BY retainedSize]            smallest-N across all objects
+          SHOW <n> [BY retainedSize]              display-only across all objects
           STATUS                                  object and class counts
           CLASSES <glob>                          classes matching glob, sorted by instance count
           EXPLAIN i<id>                           dominator chain to GC root
@@ -147,9 +147,9 @@ public final class Main implements Runnable {
             Path outDir = resolveOutDir(hprofFile, heapDir);
             Files.createDirectories(outDir);
 
-            UnpackedHeap heap = Unpacker.unpack(hprofFile, outDir, msg -> System.err.println(msg));
+            UnpackedHeap heap = Unpacker.unpack(hprofFile, outDir, System.err::println);
             var reg = new IndexRegistry(heap);
-            reg.buildAll(msg -> System.err.println(msg));
+            reg.buildAll(System.err::println);
 
             Path dbPath = outDir.resolve("sql.db");
             try (var terminal = TerminalBuilder.builder().build();
@@ -294,6 +294,9 @@ public final class Main implements Runnable {
                 case DslParser.ExplainQuery eq ->
                     JsonlFormatter.formatExplain(QueryEngine.explain(heap, reg, eq.denseId()));
 
+                case DslParser.InspectQuery iq ->
+                    JsonlFormatter.formatInspect(QueryEngine.inspect(heap, reg, iq.denseId()));
+
                 case DslParser.Pipeline p -> executePipelineQuery(p, heap, reg, sessionDb);
 
                 default -> {
@@ -413,6 +416,17 @@ public final class Main implements Runnable {
                             }
                         }
                     }
+                    case DslParser.WhereStringFilter f -> {
+                        if (contextClass != null) {
+                            var nameIdx = ClassNameIndex.load(heap);
+                            int cid = nameIdx.resolve(contextClass);
+                            if (cid >= 0) {
+                                b = QueryEngine.buildWhereStringFilterBitSet(heap, reg, b, cid,
+                                        f.field(), f.value(),
+                                        f.leadingStar(), f.trailingStar());
+                            }
+                        }
+                    }
                 }
             }
 
@@ -421,8 +435,10 @@ public final class Main implements Runnable {
                     JsonlFormatter.formatTopN(QueryEngine.topNFromBitSet(heap, reg, b, 10));
                 case DslParser.TopNTerminal t ->
                     JsonlFormatter.formatTopN(QueryEngine.topNFromBitSet(heap, reg, b, t.n()));
-                case DslParser.BottomNTerminal t ->
-                    JsonlFormatter.formatTopN(QueryEngine.bottomNFromBitSet(heap, reg, b, t.n()));
+                case DslParser.ShowNTerminal t ->
+                    JsonlFormatter.formatTopN(QueryEngine.topNFromBitSet(heap, reg, b, t.n()));
+                case DslParser.SampleNTerminal t ->
+                    JsonlFormatter.formatTopN(QueryEngine.sampleFromBitSet(heap, reg, b, t.n()));
                 case DslParser.AggregateCountTerminal ignored ->
                     "{\"count\":" + b.cardinality() + "}\n";
                 case DslParser.AggregateRetainedSizeTerminal t ->
@@ -497,9 +513,9 @@ public final class Main implements Runnable {
             Path outDir = resolveOutDir(hprofFile, heapDir);
             Files.createDirectories(outDir);
 
-            UnpackedHeap heap = Unpacker.unpack(hprofFile, outDir, msg -> System.err.println(msg));
+            UnpackedHeap heap = Unpacker.unpack(hprofFile, outDir, System.err::println);
             var reg = new IndexRegistry(heap);
-            reg.buildAll(msg -> System.err.println(msg));
+            reg.buildAll(System.err::println);
 
             System.out.println("Indexes built: " + outDir.toAbsolutePath());
             return 0;

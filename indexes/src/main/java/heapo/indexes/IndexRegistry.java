@@ -68,25 +68,25 @@ public final class IndexRegistry implements AutoCloseable {
      */
     public void buildAll(java.util.function.Consumer<String> progress) throws IOException {
         if (!exists("instance-list-offsets.bin", "instance-list-edges.bin")) {
-            progress.accept("Building instance list...");
+            progress.accept("  Building instance list...");
             ensureInstanceList();
         }
         if (!exists("reverse-refs-offsets.bin", "reverse-refs-edges.bin")) {
-            progress.accept("Building reverse refs...");
+            progress.accept("  Building reverse refs...");
             ensureReverseRefs();
         }
         if (!exists("dfs-num.bin", "dfs-vertex.bin", "dfs-parent.bin")) {
-            progress.accept("Building DFS tree...");
+            progress.accept("  Building DFS tree...");
             ensureDfsTree();
         }
         if (!exists("idom.bin")) {
-            progress.accept("Building dominator tree...");
+            progress.accept("  Building dominator tree...");
             ensureDominators();
         }
         if (!exists("retained-size.bin", "retained-size-rank.bin",
                     "dominator-children-offsets.bin", "dominator-children-edges.bin",
                     "dominator-subtree-size.bin")) {
-            progress.accept("Computing retained sizes...");
+            progress.accept("  Computing retained sizes...");
             ensureRetainedSizes();
         }
     }
@@ -178,6 +178,18 @@ public final class IndexRegistry implements AutoCloseable {
      */
     public byte[] loadGcRootTypeMap() throws IOException {
         Path p = indexDir.resolve("gc-root-type-map.bin");
+        return Files.exists(p) ? Files.readAllBytes(p) : null;
+    }
+
+    /** Returns one byte per dense ID: 1 if object array, 0 otherwise. Null if file absent (old index). */
+    public byte[] loadIsObjArray() throws IOException {
+        Path p = indexDir.resolve("is-obj-array.bin");
+        return Files.exists(p) ? Files.readAllBytes(p) : null;
+    }
+
+    /** Returns one byte per dense ID: HprofReader element type code if primitive array, 0 otherwise. Null if file absent. */
+    public byte[] loadPrimArrayTypes() throws IOException {
+        Path p = indexDir.resolve("prim-array-types.bin");
         return Files.exists(p) ? Files.readAllBytes(p) : null;
     }
 

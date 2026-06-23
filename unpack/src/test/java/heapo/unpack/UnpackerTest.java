@@ -47,7 +47,6 @@ class UnpackerTest {
         Path manifest = heap.outputDir().resolve("manifest.json");
         assertTrue(Files.exists(manifest), "manifest.json should exist");
         String text = Files.readString(manifest);
-        assertTrue(text.contains("hprofFingerprint"), "manifest should contain hprofFingerprint");
         assertTrue(text.contains("objectCount"), "manifest should contain objectCount");
     }
 

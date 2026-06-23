@@ -216,6 +216,215 @@ public final class QueryEngine {
         return path;
     }
 
+    public static List<FieldRow> inspect(UnpackedHeap heap, IndexRegistry registry, int denseId)
+            throws IOException {
+        var names   = ClassNameIndex.load(heap);
+        byte[] isObjArray = registry.loadIsObjArray();
+        byte[] primTypes  = registry.loadPrimArrayTypes();
+
+        boolean isPrimArray = primTypes != null && denseId < primTypes.length && primTypes[denseId] != 0;
+        boolean isObjArr    = !isPrimArray && isObjArray != null
+                              && denseId < isObjArray.length && isObjArray[denseId] != 0;
+
+        if (isPrimArray) {
+            return inspectPrimArray(registry, denseId, primTypes[denseId] & 0xFF);
+        } else if (isObjArr) {
+            return inspectObjArray(heap, registry, names, denseId);
+        } else {
+            return inspectInstance(heap, registry, names, denseId, isObjArray);
+        }
+    }
+
+    private static List<FieldRow> inspectPrimArray(IndexRegistry registry, int denseId, int elemType)
+            throws IOException {
+        if (!registry.hasPrimArrayIndex()) return List.of();
+        String typeName = primTypeName(elemType);
+        try (var offsets = registry.openPrimArrayOffsets();
+             var data    = registry.openPrimArrayData()) {
+            long off = offsets.readLong(denseId);
+            if (off < 0) return List.of();
+            int byteLen = data.readIntAt(off);
+            int elemSize = HprofReader.primitiveTypeSize(elemType);
+            int count = (elemSize > 0) ? byteLen / elemSize : 0;
+            var rows = new ArrayList<FieldRow>();
+            for (int i = 0; i < count && i < 100; i++) {
+                long val = switch (elemSize) {
+                    case 1 -> data.readByteAt(off + 4L + i);
+                    case 2 -> data.readShortAt(off + 4L + (long)i * 2);
+                    case 4 -> data.readIntAt(off + 4L + (long)i * 4);
+                    case 8 -> data.readLongAt(off + 4L + (long)i * 8);
+                    default -> 0L;
+                };
+                String desc = formatPrimValue(val, elemType);
+                rows.add(new FieldRow("[" + i + "]", -1, false, null, -1, -1, desc, typeName, val));
+            }
+            return rows;
+        }
+    }
+
+    private static List<FieldRow> inspectObjArray(UnpackedHeap heap, IndexRegistry registry,
+                                                   ClassNameIndex names, int denseId)
+            throws IOException {
+        var rows = new ArrayList<FieldRow>();
+        try (var fwd      = registry.openForwardRefs();
+             var classOf  = registry.openClassOf();
+             var retained = registry.openRetainedSize();
+             var shallow  = registry.openShallowSize()) {
+            long start = fwd.start(denseId);
+            long end   = fwd.end(denseId);
+            int idx = 0;
+            for (long pos = start; pos < end; pos++, idx++) {
+                int refId = fwd.edge(pos);
+                int refClassDid = classOf.readInt(refId);
+                String refClass = names.nameOf(refClassDid);
+                long ret = retained.readLong(refId);
+                long sha = (long) shallow.readInt(refId) * 8L;
+                rows.add(new FieldRow("[" + idx + "]", refId, false, refClass, ret, sha, null, null, 0));
+            }
+        }
+        return enrichFieldRows(rows, names, registry);
+    }
+
+    private static List<FieldRow> inspectInstance(UnpackedHeap heap, IndexRegistry registry,
+                                                   ClassNameIndex names, int denseId,
+                                                   byte[] isObjArray) throws IOException {
+        int classDid;
+        List<IndexRegistry.FieldDef> schema;
+        long fwdStart;
+        long fwdEnd;
+        var rows = new ArrayList<FieldRow>();
+
+        try (var classOf  = registry.openClassOf();
+             var fwd      = registry.openForwardRefs();
+             var retained = registry.openRetainedSize();
+             var shallow  = registry.openShallowSize()) {
+
+            classDid = classOf.readInt(denseId);
+            schema   = registry.loadFieldSchema(classDid);
+            if (schema.isEmpty()) return List.of();
+
+            fwdStart = fwd.start(denseId);
+            fwdEnd   = fwd.end(denseId);
+
+            int instanceIdx = -1;
+            try (var il = registry.openInstanceList()) {
+                long ilStart = il.start(classDid);
+                long ilEnd   = il.end(classDid);
+                int count = 0;
+                for (long pos = ilStart; pos < ilEnd; pos++) {
+                    int id = il.edge(pos);
+                    if (isObjArray != null && id < isObjArray.length && isObjArray[id] != 0) continue;
+                    if (id == denseId) { instanceIdx = count; break; }
+                    count++;
+                }
+            }
+
+            int recordSize = IndexRegistry.fieldRecordSize(schema);
+            IndexFile fv = null;
+            if (instanceIdx >= 0 && recordSize > 0) {
+                try { fv = registry.openFieldValues(classDid); } catch (IOException ignored) {}
+            }
+            try {
+                int objRefPos = 0;
+                for (var field : schema) {
+                    String fname = field.name();
+                    int tc = field.typeCode();
+                    if (tc == HprofReader.TYPE_OBJECT) {
+                        long pos = fwdStart + objRefPos;
+                        if (pos < fwdEnd) {
+                            int refId = fwd.edge(pos);
+                            int refClassDid = classOf.readInt(refId);
+                            String refClass = names.nameOf(refClassDid);
+                            long ret = retained.readLong(refId);
+                            long sha = (long) shallow.readInt(refId) * 8L;
+                            rows.add(new FieldRow(fname, refId, false, refClass, ret, sha, null, null, 0));
+                        } else {
+                            rows.add(new FieldRow(fname, -1, true, null, -1, -1, null, null, 0));
+                        }
+                        objRefPos++;
+                    } else {
+                        long val = 0;
+                        if (fv != null && instanceIdx >= 0) {
+                            long byteOff = (long) instanceIdx * recordSize + field.byteOffset();
+                            val = readPrimitive(fv, byteOff, tc);
+                        }
+                        String desc = formatPrimValue(val, tc);
+                        rows.add(new FieldRow(fname, -1, false, null, -1, -1, desc, primTypeName(tc), val));
+                    }
+                }
+            } finally {
+                if (fv != null) fv.close();
+            }
+        }
+        return enrichFieldRows(rows, names, registry);
+    }
+
+    private static List<FieldRow> enrichFieldRows(List<FieldRow> rows, ClassNameIndex names,
+                                                   IndexRegistry registry) throws IOException {
+        boolean hasStrings = rows.stream().anyMatch(r -> r.isObject() && "java.lang.String".equals(r.className()));
+        boolean hasThreads = rows.stream().anyMatch(r -> r.isObject() && "java.lang.Thread".equals(r.className()));
+        boolean hasClasses = rows.stream().anyMatch(r -> r.isObject() && "java.lang.Class".equals(r.className()));
+
+        if (hasClasses) {
+            for (int i = 0; i < rows.size(); i++) {
+                FieldRow r = rows.get(i);
+                if (r.isObject() && "java.lang.Class".equals(r.className()) && r.description() == null) {
+                    String rep = names.nameOf(r.refDenseId());
+                    if (!"?".equals(rep))
+                        rows.set(i, new FieldRow(r.fieldName(), r.refDenseId(), false, r.className(),
+                                                 r.retainedSize(), r.shallowSize(), rep + ".class",
+                                                 null, 0));
+                }
+            }
+        }
+
+        int threadNameRefPos = hasThreads ? threadNameRefPos(names, registry) : -1;
+        if ((hasStrings || threadNameRefPos >= 0) && registry.hasPrimArrayIndex()) {
+            final int namePos = threadNameRefPos;
+            try (var fwd        = registry.openForwardRefs();
+                 var primOff    = registry.openPrimArrayOffsets();
+                 var primData   = registry.openPrimArrayData()) {
+                for (int i = 0; i < rows.size(); i++) {
+                    FieldRow r = rows.get(i);
+                    if (!r.isObject() || r.description() != null) continue;
+                    String desc = null;
+                    if (hasStrings && "java.lang.String".equals(r.className()))
+                        desc = readStringContent(r.refDenseId(), fwd, primOff, primData);
+                    else if (namePos >= 0 && "java.lang.Thread".equals(r.className()))
+                        desc = readRefFieldString(r.refDenseId(), namePos, fwd, primOff, primData);
+                    if (desc != null)
+                        rows.set(i, new FieldRow(r.fieldName(), r.refDenseId(), false, r.className(),
+                                                 r.retainedSize(), r.shallowSize(), desc, null, 0));
+                }
+            }
+        }
+        return rows;
+    }
+
+    private static String primTypeName(int typeCode) {
+        return switch (typeCode) {
+            case HprofReader.TYPE_BOOLEAN -> "boolean";
+            case HprofReader.TYPE_CHAR    -> "char";
+            case HprofReader.TYPE_FLOAT   -> "float";
+            case HprofReader.TYPE_DOUBLE  -> "double";
+            case HprofReader.TYPE_BYTE    -> "byte";
+            case HprofReader.TYPE_SHORT   -> "short";
+            case HprofReader.TYPE_INT     -> "int";
+            case HprofReader.TYPE_LONG    -> "long";
+            default                       -> "unknown";
+        };
+    }
+
+    private static String formatPrimValue(long val, int typeCode) {
+        return switch (typeCode) {
+            case HprofReader.TYPE_BOOLEAN -> (val != 0 ? "true" : "false");
+            case HprofReader.TYPE_CHAR    -> String.valueOf((char) val);
+            case HprofReader.TYPE_FLOAT   -> String.valueOf(Float.intBitsToFloat((int) val));
+            case HprofReader.TYPE_DOUBLE  -> String.valueOf(Double.longBitsToDouble(val));
+            default                       -> String.valueOf(val);
+        };
+    }
+
     private static String staticFieldName(int classDenseId, int relPos, IndexRegistry registry)
             throws IOException {
         var names = registry.loadStaticFieldNames(classDenseId);
@@ -248,57 +457,6 @@ public final class QueryEngine {
             }
         }
         return "(indirect)";
-    }
-
-    /**
-     * Returns the bottom {@code n} objects of the given class ordered by retained size ascending.
-     */
-    public static List<TopNRow> allBottomByRetainedSize(UnpackedHeap heap, IndexRegistry registry,
-                                                         String className, int n) throws IOException {
-        var names        = ClassNameIndex.load(heap);
-        int objectCount  = heap.objectCount();
-        boolean allObjs  = className.equals("*");
-        int classDenseId = allObjs ? -1 : names.resolve(className);
-        if (!allObjs && classDenseId < 0) return List.of();
-
-        // Min-heap of size n (keep smallest retained sizes); use rank as proxy for size
-        PriorityQueue<int[]> bottomN = new PriorityQueue<>(n + 1,
-            (a, b) -> Integer.compare(a[1], b[1])); // min-heap by rank
-
-        try (var il   = registry.openInstanceList();
-             var rank = registry.openRetainedSizeRank()) {
-
-            if (allObjs) {
-                for (int v = 0; v < objectCount; v++) {
-                    bottomN.offer(new int[]{v, rank.readInt(v)});
-                    if (bottomN.size() > n) bottomN.poll();
-                }
-            } else {
-                for (long e = il.start(classDenseId), end = il.end(classDenseId); e < end; e++) {
-                    int v = il.edge(e);
-                    bottomN.offer(new int[]{v, rank.readInt(v)});
-                    if (bottomN.size() > n) bottomN.poll();
-                }
-            }
-        }
-
-        // Sort by rank descending (smallest retained last = ascending retained order → rank desc = size asc)
-        List<int[]> sorted = new ArrayList<>(bottomN);
-        sorted.sort((a, b) -> Integer.compare(b[1], a[1])); // rank desc → retained size asc
-
-        List<TopNRow> rows = new ArrayList<>(sorted.size());
-        try (var retained    = registry.openRetainedSize();
-             var shallowSize = registry.openShallowSize();
-             var classOf     = registry.openClassOf()) {
-
-            for (int i = 0; i < sorted.size(); i++) {
-                int v        = sorted.get(i)[0];
-                int classDid = classOf.readInt(v);
-                rows.add(new TopNRow(i + 1, v, names.nameOf(classDid),
-                    retained.readLong(v), (long) shallowSize.readInt(v) * 8L, null));
-            }
-        }
-        return withDescriptions(rows, names, registry);
     }
 
     /**
@@ -680,6 +838,56 @@ public final class QueryEngine {
         return result;
     }
 
+    public static BitSet buildWhereStringFilterBitSet(
+            UnpackedHeap heap, IndexRegistry registry,
+            BitSet inputBits, int classDenseId,
+            String fieldName, String targetValue,
+            boolean leadingStar, boolean trailingStar) throws IOException {
+        List<IndexRegistry.FieldDef> schema = registry.loadFieldSchema(classDenseId);
+        int refPos = -1;
+        int objCount = 0;
+        for (var fd : schema) {
+            if (fd.typeCode() == HprofReader.TYPE_OBJECT) {
+                if (fd.name().equals(fieldName)) { refPos = objCount; break; }
+                objCount++;
+            }
+        }
+        if (refPos < 0)
+            throw new IllegalArgumentException("Object field '" + fieldName + "' not found in schema");
+
+        final int targetRefPos = refPos;
+        BitSet result = new BitSet(heap.objectCount());
+
+        if (!registry.hasPrimArrayIndex()) return result;
+
+        try (var il      = registry.openInstanceList();
+             var fwd     = registry.openForwardRefs();
+             var primOff = registry.openPrimArrayOffsets();
+             var primData= registry.openPrimArrayData()) {
+            long start = il.start(classDenseId);
+            long end   = il.end(classDenseId);
+            for (long e = start; e < end; e++) {
+                int denseId = il.edge(e);
+                if (!inputBits.get(denseId)) continue;
+                long fwdStart = fwd.start(denseId);
+                long fwdEnd   = fwd.end(denseId);
+                if (fwdStart + targetRefPos >= fwdEnd) continue;
+                int refDenseId = fwd.edge(fwdStart + targetRefPos);
+                String val = readStringContent(refDenseId, fwd, primOff, primData);
+                if (val != null && matchesString(val, targetValue, leadingStar, trailingStar))
+                    result.set(denseId);
+            }
+        }
+        return result;
+    }
+
+    private static boolean matchesString(String val, String target, boolean leadingStar, boolean trailingStar) {
+        if (!leadingStar && !trailingStar) return val.equals(target);
+        if (!leadingStar)                  return val.startsWith(target);
+        if (!trailingStar)                 return val.endsWith(target);
+        return val.contains(target);
+    }
+
     private static long readPrimitive(IndexFile fv, long byteOffset, int typeCode) {
         return switch (typeCode) {
             case HprofReader.TYPE_BOOLEAN, HprofReader.TYPE_BYTE -> fv.readByteAt(byteOffset);
@@ -803,43 +1011,6 @@ public final class QueryEngine {
         return withDescriptions(rows, names, registry);
     }
 
-    /**
-     * Returns the bottom {@code n} objects in the bitset ordered by retained size ascending.
-     */
-    public static List<TopNRow> bottomNFromBitSet(UnpackedHeap heap, IndexRegistry registry,
-                                                   BitSet bits, int n) throws IOException {
-        var names = ClassNameIndex.load(heap);
-
-        // Keep N objects with the LARGEST ranks (= smallest retained sizes).
-        // Min-heap keyed by rank: pops smallest rank (= largest retained) when overfull.
-        PriorityQueue<int[]> bottomN = new PriorityQueue<>(n + 1,
-            (a, b) -> Integer.compare(a[1], b[1]));
-
-        try (var rank = registry.openRetainedSizeRank()) {
-            for (int v = bits.nextSetBit(0); v >= 0; v = bits.nextSetBit(v + 1)) {
-                bottomN.offer(new int[]{v, rank.readInt(v)});
-                if (bottomN.size() > n) bottomN.poll();
-            }
-        }
-
-        // rank desc = retained size asc
-        List<int[]> sorted = new ArrayList<>(bottomN);
-        sorted.sort((a, b) -> Integer.compare(b[1], a[1]));
-
-        List<TopNRow> rows = new ArrayList<>(sorted.size());
-        try (var retained    = registry.openRetainedSize();
-             var shallowSize = registry.openShallowSize();
-             var classOf     = registry.openClassOf()) {
-            for (int i = 0; i < sorted.size(); i++) {
-                int v        = sorted.get(i)[0];
-                int classDid = classOf.readInt(v);
-                rows.add(new TopNRow(i + 1, v, names.nameOf(classDid),
-                    retained.readLong(v), (long) shallowSize.readInt(v) * 8L, null));
-            }
-        }
-        return withDescriptions(rows, names, registry);
-    }
-
     /** Computes MAX or SUM of retained sizes over all set bits in {@code bits}. */
     public static long aggregateFromBitSet(UnpackedHeap heap, IndexRegistry registry,
                                             BitSet bits, String func) throws IOException {
@@ -851,6 +1022,42 @@ public final class QueryEngine {
             }
         }
         return func.equals("MAX") && acc == Long.MIN_VALUE ? 0 : acc;
+    }
+
+    public static List<TopNRow> sampleFromBitSet(UnpackedHeap heap, IndexRegistry registry,
+                                                  BitSet bits, int n) throws IOException {
+        int total = bits.cardinality();
+        if (total == 0) return List.of();
+        n = Math.min(n, total);
+
+        // Reservoir sampling (Algorithm R)
+        int[] reservoir = new int[n];
+        int filled = 0;
+        var rng = new java.util.Random();
+
+        int idx = 0;
+        for (int v = bits.nextSetBit(0); v >= 0; v = bits.nextSetBit(v + 1), idx++) {
+            if (filled < n) {
+                reservoir[filled++] = v;
+            } else {
+                int j = rng.nextInt(idx + 1);
+                if (j < n) reservoir[j] = v;
+            }
+        }
+
+        var names = ClassNameIndex.load(heap);
+        var rows = new ArrayList<TopNRow>();
+        try (var retained  = registry.openRetainedSize();
+             var shallowSz = registry.openShallowSize();
+             var classOf   = registry.openClassOf()) {
+            for (int i = 0; i < n; i++) {
+                int v = reservoir[i];
+                int classDid = classOf.readInt(v);
+                rows.add(new TopNRow(i + 1, v, names.nameOf(classDid),
+                                     retained.readLong(v), (long) shallowSz.readInt(v) * 8L, null));
+            }
+        }
+        return withDescriptions(rows, names, registry);
     }
 
     // ── Description enrichment ────────────────────────────────────────────────

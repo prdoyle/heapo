@@ -647,14 +647,40 @@ class HeapSessionTest {
     // ── Phase 8: additional DSL operations ───────────────────────────────────
 
     @Test
-    void bottomNReturnsSmallestRetainedSizes() throws Exception {
-        Path p = tempRoot.resolve("bottom-n.db");
+    void topNTruncatesThat() throws Exception {
+        Path p = tempRoot.resolve("top-truncates.db");
         try (var session = new HeapSession(heap, registry, p)) {
-            String result = session.execute(
-                "CLASS heapo.samples.KnownObjects$Bar BOTTOM 2 BY retainedSize");
-            assertFalse(result.contains("\"error\""), "BOTTOM query should succeed: " + result);
+            // Use TOP 1 so we always get exactly 1 row regardless of how many Bars exist
+            String displayed = session.execute("CLASS * TOP 1");
+            String count = session.execute("THAT COUNT");
+            assertFalse(count.contains("\"error\""), "COUNT after TOP should succeed: " + count);
+            assertTrue(count.contains("\"count\":1"), "THAT should contain exactly 1 object after TOP 1, got: " + count);
+        }
+    }
+
+    @Test
+    void showNPreservesThat() throws Exception {
+        Path p = tempRoot.resolve("show-preserves.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            String all = session.execute("CLASS heapo.samples.KnownObjects$Bar COUNT");
+            String fullCount = all.replaceAll(".*\"count\":(\\d+).*", "$1").strip();
+
+            session.execute("CLASS heapo.samples.KnownObjects$Bar SHOW 1");
+            String afterShow = session.execute("THAT COUNT");
+            assertTrue(afterShow.contains("\"count\":" + fullCount),
+                "THAT should still contain all " + fullCount + " Bars after SHOW 1, got: " + afterShow);
+        }
+    }
+
+    @Test
+    void showNDisplaysNRows() throws Exception {
+        Path p = tempRoot.resolve("show-displays-n.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            String result = session.execute("CLASS * SHOW 3 BY retainedSize");
+            assertFalse(result.contains("\"error\""), "SHOW query should succeed: " + result);
             long lineCount = result.lines().filter(l -> !l.isBlank()).count();
-            assertTrue(lineCount <= 2, "Should return at most 2 rows");
+            assertTrue(lineCount <= 3, "SHOW 3 should display at most 3 rows, got: " + lineCount);
+            assertTrue(result.contains("\"rank\""), "SHOW output should contain ranked rows");
         }
     }
 

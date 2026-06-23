@@ -28,10 +28,10 @@ public final class Unpacker {
     }
 
     public static UnpackedHeap unpack(Path hprofFile, Path outputDir,
-                                       java.util.function.Consumer<String> progress) throws IOException {
+                                      java.util.function.Consumer<String> progress) throws IOException {
         Path manifestPath = outputDir.resolve("manifest.json");
         if (Files.exists(manifestPath)) {
-            UnpackedHeap cached = tryLoadManifest(hprofFile, outputDir, manifestPath);
+            UnpackedHeap cached = tryLoadManifest(outputDir, manifestPath);
             if (cached != null) return cached;
         }
 
@@ -60,6 +60,7 @@ public final class Unpacker {
 
         int objectCount = handler.nextId;
         int classCount  = handler.classCount;
+        progress.accept(String.format("  %,d objects, %,d classes", objectCount, classCount));
 
         // Sort id-map and split into parallel lookup arrays
         sortAndSplitIdMap(scratchIdMap, tempDir, indexDir);
@@ -73,6 +74,8 @@ public final class Unpacker {
         buildSuperClassOf(handler.superClasses, indexDir, sortedRawIds, denseIds, objectCount);
         buildGcRoots(handler.gcRootRawIds, handler.gcRootTypes, indexDir,
                      sortedRawIds, denseIds, objectCount);
+        buildIsObjArray(handler.objArrayDenseIds, indexDir, objectCount);
+        buildPrimArrayTypes(handler.primArrayElementTypes, indexDir, objectCount);
 
         // Build field-value index: per-class primitive field files + schemas
         Path fieldsDir = outputDir.resolve("fields");
@@ -90,9 +93,7 @@ public final class Unpacker {
         writeManifest(hprofFile, objectCount, classCount, outputDir.resolve("manifest.json"));
         writeClassNames(handler.classNameIds, handler.strings, sortedRawIds, denseIds,
                         outputDir.resolve("class-names.txt"));
-        UnpackedHeap result = new UnpackedHeap(outputDir, objectCount, classCount);
-        progress.accept(String.format("  %,d objects, %,d classes", objectCount, classCount));
-        return result;
+        return new UnpackedHeap(outputDir, objectCount, classCount);
     }
 
     // ── HPROF scan handler ───────────────────────────────────────────────────
@@ -114,6 +115,9 @@ public final class Unpacker {
 
         final List<Long>      gcRootRawIds = new ArrayList<>();
         final Map<Long, Byte> gcRootTypes  = new HashMap<>();
+
+        final List<Integer>    objArrayDenseIds     = new ArrayList<>();
+        final Map<Integer, Byte> primArrayElementTypes = new HashMap<>();
 
         int nextId = 0;
         int classCount = 0;
@@ -213,6 +217,7 @@ public final class Unpacker {
             emitIdMap(objectId, denseId);
             classOfRawOut.writeLong(elementClassId);  // approximation: element class ≠ array class
             shallowSizeOut.writeInt(shallowShift(size));
+            objArrayDenseIds.add(denseId);
             for (long elem : elements) {
                 if (elem != 0) emitEdge(denseId, elem);
             }
@@ -223,6 +228,7 @@ public final class Unpacker {
                 throws IOException {
             int denseId = nextId++;
             int size    = 16 + numElements * HprofReader.primitiveTypeSize(elementType);
+            primArrayElementTypes.put(denseId, (byte) elementType);
             emitIdMap(objectId, denseId);
             classOfRawOut.writeLong(0L);
             shallowSizeOut.writeInt(shallowShift(size));
@@ -577,36 +583,32 @@ public final class Unpacker {
         Files.delete(scratchPath);
     }
 
+    private static void buildIsObjArray(List<Integer> ids, Path indexDir, int objectCount) throws IOException {
+        byte[] arr = new byte[objectCount];
+        for (int id : ids) if (id >= 0 && id < objectCount) arr[id] = 1;
+        Files.write(indexDir.resolve("is-obj-array.bin"), arr);
+    }
+
+    private static void buildPrimArrayTypes(Map<Integer, Byte> types, Path indexDir, int objectCount) throws IOException {
+        byte[] arr = new byte[objectCount];
+        for (var e : types.entrySet()) {
+            int id = e.getKey();
+            if (id >= 0 && id < objectCount) arr[id] = e.getValue();
+        }
+        Files.write(indexDir.resolve("prim-array-types.bin"), arr);
+    }
+
     // ── Manifest ─────────────────────────────────────────────────────────────
 
-    /**
-     * Returns a cached {@link UnpackedHeap} if the manifest exists and its fingerprint
-     * matches the current HPROF file, or {@code null} if a rescan is needed.
-     */
-    private static UnpackedHeap tryLoadManifest(Path hprofFile, Path outputDir,
-                                                 Path manifestPath) throws IOException {
+    private static UnpackedHeap tryLoadManifest(Path outputDir, Path manifestPath) {
         try {
             String json = Files.readString(manifestPath);
-            String currentFp = computeFingerprint(hprofFile);
-
-            String storedFp = extractJsonString(json, "hprofFingerprint");
-            if (!currentFp.equals(storedFp)) return null;
-
             int objectCount = extractJsonInt(json, "objectCount");
             int classCount  = extractJsonInt(json, "classCount");
             return new UnpackedHeap(outputDir, objectCount, classCount);
         } catch (Exception e) {
-            return null; // corrupt or unreadable manifest — rescan
+            return null;
         }
-    }
-
-    private static String extractJsonString(String json, String key) {
-        String search = "\"" + key + "\": \"";
-        int start = json.indexOf(search);
-        if (start < 0) throw new IllegalArgumentException("Key not found: " + key);
-        start += search.length();
-        int end = json.indexOf('"', start);
-        return json.substring(start, end);
     }
 
     private static int extractJsonInt(String json, String key) {

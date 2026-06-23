@@ -57,12 +57,14 @@ public final class DslParser {
     public record ReferencedByFilter(String name)                 implements Filter {}
     public record ReachableFromFilter(String name)                implements Filter {}
     public record WhereFilter(String field, String op, String rawValue) implements Filter {}
+    public record WhereStringFilter(String field, String value, boolean leadingStar, boolean trailingStar) implements Filter {}
 
     public sealed interface Terminal {}
     public record TopNTerminal(int n)                          implements Terminal {}
-    public record BottomNTerminal(int n)                       implements Terminal {}
+    public record ShowNTerminal(int n)                         implements Terminal {}
     public record AggregateCountTerminal()                     implements Terminal {}
     public record AggregateRetainedSizeTerminal(String func)   implements Terminal {}
+    public record SampleNTerminal(int n)                       implements Terminal {}
 
     // ── Query types ───────────────────────────────────────────────────────────
 
@@ -75,6 +77,7 @@ public final class DslParser {
     public record StatusQuery()                              implements Query {}
     public record ClassesQuery(String glob)                  implements Query {}  // null = all
     public record ExplainQuery(int denseId)                  implements Query {}
+    public record InspectQuery(int denseId)                  implements Query {}
 
     // Session commands
     public record NamesQuery(String glob)                    implements Query {}  // null = all
@@ -92,9 +95,9 @@ public final class DslParser {
     private static final Set<String> OPS = Set.of(">", ">=", "<", "<=", "=");
 
     private static final List<String> TOP_LEVEL = List.of(
-        "ALL", "CLASS", "THAT", "TOP", "BOTTOM",
+        "ALL", "CLASS", "THAT", "TOP", "SHOW",
         "GcRoots", "Threads", "ClassLoaders", "SoftReferences", "WeakReferences", "PhantomReferences",
-        "STATUS", "CLASSES", "NAMES", "EXPLAIN",
+        "STATUS", "CLASSES", "NAMES", "EXPLAIN", "INSPECT",
         "HISTORY", "CALL", "FORGET", "UNDO"
     );
 
@@ -104,7 +107,7 @@ public final class DslParser {
     );
 
     private static final List<String> TERMINAL_KEYWORDS = List.of(
-        "TOP", "BOTTOM", "COUNT", "SUM", "MAX"
+        "TOP", "SHOW", "COUNT", "SUM", "MAX", "SAMPLE"
     );
 
     private static final List<String> FILTER_OR_TERMINAL;
@@ -133,14 +136,15 @@ public final class DslParser {
             case "UNDO"    -> exactly1(t, new UndoQuery());
             case "CLASS"   -> parseClassPipeline(t, 1);
             case "ALL"     -> parsePipeline(new NameSource("All"), t, 1);
-            case "TOP"     -> parseTerminalSuffix("TOP",    new NameSource("All"), List.of(), t, 1);
-            case "BOTTOM"  -> parseTerminalSuffix("BOTTOM", new NameSource("All"), List.of(), t, 1);
+            case "TOP"     -> parseTerminalSuffix("TOP",  new NameSource("All"), List.of(), t, 1);
+            case "SHOW"    -> parseTerminalSuffix("SHOW", new NameSource("All"), List.of(), t, 1);
             case "THAT"    -> t.length == 1
                 ? complete(new ThatQuery(), FILTER_OR_TERMINAL)
                 : parsePipeline(new ThatSource(), t, 1);
             case "CLASSES" -> parseClasses(t, 1);
             case "NAMES"   -> parseNames(t, 1);
             case "EXPLAIN" -> parseExplain(t, 1);
+            case "INSPECT" -> parseInspect(t, 1);
             case "HISTORY" -> parseHistory(t, 1);
             case "CALL"    -> parseCall(t, 1);
             case "FORGET"  -> parseForget(t, 1);
@@ -256,10 +260,28 @@ public final class DslParser {
                 if (i >= t.length) return incomplete(opList());
                 if (!isOp(t[i])) return invalid("Expected comparison op after WHERE " + field + ", got: " + t[i]);
                 String op = t[i++];
-                if (i >= t.length) return incomplete(List.of("<value>"));
-                filters.add(new WhereFilter(field, op, t[i++]));
+                if (i >= t.length) return incomplete(List.of("<value>", "\"<string>\""));
+                String rawVal = t[i++];
+                boolean isStringPattern = rawVal.startsWith("\"") || rawVal.startsWith("*\"");
+                if (isStringPattern && eq(op, "=")) {
+                    boolean leadingStar = rawVal.startsWith("*");
+                    String rest = leadingStar ? rawVal.substring(1) : rawVal;
+                    boolean trailingStar = rest.endsWith("\"*");
+                    String content;
+                    if (trailingStar && rest.length() >= 3)
+                        content = rest.substring(1, rest.length() - 2);
+                    else if (!trailingStar && rest.endsWith("\"") && rest.length() >= 2)
+                        content = rest.substring(1, rest.length() - 1);
+                    else
+                        return invalid("Unclosed string literal: " + rawVal);
+                    if (content.contains("\\"))
+                        return invalid("Backslashes not allowed in string literals: " + rawVal);
+                    filters.add(new WhereStringFilter(field, content, leadingStar, trailingStar));
+                } else {
+                    filters.add(new WhereFilter(field, op, rawVal));
+                }
 
-            } else if (eq(t[i], "TOP") || eq(t[i], "BOTTOM")) {
+            } else if (eq(t[i], "TOP") || eq(t[i], "SHOW")) {
                 String kw = t[i].toUpperCase();
                 return parseTerminalSuffix(kw, source, List.copyOf(filters), t, i + 1);
 
@@ -281,6 +303,15 @@ public final class DslParser {
                 if (i + 1 < t.length) return invalid("Unexpected tokens after MAX retainedSize");
                 return complete(new Pipeline(source, List.copyOf(filters), new AggregateRetainedSizeTerminal("MAX")), List.of());
 
+            } else if (eq(t[i], "SAMPLE")) {
+                i++;
+                if (i >= t.length) return incomplete(List.of("<n>"));
+                int n = parseInt(t[i]);
+                if (n < 0) return invalid("Expected positive integer after SAMPLE, got: " + t[i]);
+                i++;
+                if (i < t.length) return invalid("Unexpected tokens after SAMPLE " + n);
+                return complete(new Pipeline(source, List.copyOf(filters), new SampleNTerminal(n)), List.of());
+
             } else {
                 return invalid("Expected filter or terminal keyword, got: " + t[i]);
             }
@@ -289,14 +320,14 @@ public final class DslParser {
         return complete(new Pipeline(source, List.copyOf(filters), null), FILTER_OR_TERMINAL);
     }
 
-    /** Parse the {@code <n> [BY retainedSize]} suffix of TOP/BOTTOM, then wrap in a Pipeline. */
+    /** Parse the {@code <n> [BY retainedSize]} suffix of TOP/SHOW, then wrap in a Pipeline. */
     private static ParseResult parseTerminalSuffix(String kw, Source source, List<Filter> filters,
                                                     String[] t, int i) {
         if (i >= t.length) return incomplete(List.of("<n>"));
         int n = parseInt(t[i]);
         if (n < 0) return invalid("Expected positive integer after " + kw + ", got: " + t[i]);
         i++;
-        Terminal terminal = kw.equals("TOP") ? new TopNTerminal(n) : new BottomNTerminal(n);
+        Terminal terminal = kw.equals("SHOW") ? new ShowNTerminal(n) : new TopNTerminal(n);
 
         if (i >= t.length) return complete(new Pipeline(source, filters, terminal), List.of("BY"));
         if (eq(t[i], "BY")) {
@@ -336,6 +367,14 @@ public final class DslParser {
         }
         if (i + 1 < t.length) return invalid("Unexpected tokens after EXPLAIN " + arg);
         return complete(new ExplainNameQuery(arg), List.of());
+    }
+
+    private static ParseResult parseInspect(String[] t, int i) {
+        if (i >= t.length) return incomplete(List.of("i<n>"));
+        if (!isObjRef(t[i])) return invalid("Expected i<n> after INSPECT, got: " + t[i]);
+        int denseId = Integer.parseInt(t[i].substring(1));
+        if (i + 1 < t.length) return invalid("Unexpected tokens after INSPECT " + t[i]);
+        return complete(new InspectQuery(denseId), List.of());
     }
 
     // ── Session commands ──────────────────────────────────────────────────────

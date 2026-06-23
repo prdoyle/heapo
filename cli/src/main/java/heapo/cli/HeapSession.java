@@ -109,6 +109,10 @@ public final class HeapSession implements AutoCloseable {
                 history.record(rawCmd, System.currentTimeMillis());
                 yield JsonlFormatter.formatExplain(QueryEngine.explain(heap, registry, eq.denseId()));
             }
+            case DslParser.InspectQuery iq -> {
+                history.record(rawCmd, System.currentTimeMillis());
+                yield JsonlFormatter.formatInspect(QueryEngine.inspect(heap, registry, iq.denseId()));
+            }
 
             // Mutating session commands — record themselves internally
             case DslParser.UndoQuery ignored        -> handleUndo();
@@ -358,6 +362,20 @@ public final class HeapSession implements AutoCloseable {
                                                    f.field(), f.op(), longValue);
     }
 
+    private BitSet applyWhereStringFilter(BitSet bits, DslParser.WhereStringFilter f, String contextClass)
+            throws IOException {
+        if (contextClass == null)
+            throw new IllegalArgumentException(
+                "WHERE requires a class context — use CLASS <class> or add OF TYPE <class> before WHERE");
+        ClassNameIndex nameIndex = ClassNameIndex.load(heap);
+        int classDenseId = nameIndex.resolve(contextClass);
+        if (classDenseId < 0)
+            throw new IllegalArgumentException("Unknown class: '" + contextClass + "'");
+        return QueryEngine.buildWhereStringFilterBitSet(heap, registry, bits, classDenseId,
+                                                         f.field(), f.value(),
+                                                         f.leadingStar(), f.trailingStar());
+    }
+
     private static long parseWhereValue(String raw) {
         if (raw.equalsIgnoreCase("true"))  return 1L;
         if (raw.equalsIgnoreCase("false")) return 0L;
@@ -435,6 +453,8 @@ public final class HeapSession implements AutoCloseable {
             }
             case DslParser.WhereFilter ignored ->
                 throw new IllegalStateException("WhereFilter must be handled in executePipeline");
+            case DslParser.WhereStringFilter ignored ->
+                throw new IllegalStateException("WhereStringFilter must be handled in executePipeline");
         };
     }
 
@@ -462,6 +482,8 @@ public final class HeapSession implements AutoCloseable {
             if (filter instanceof DslParser.OfTypeFilter f) contextClass = f.className();
             if (filter instanceof DslParser.WhereFilter f) {
                 bits = applyWhereFilter(bits, f, contextClass);
+            } else if (filter instanceof DslParser.WhereStringFilter f) {
+                bits = applyWhereStringFilter(bits, f, contextClass);
             } else {
                 bits = applyFilter(bits, filter);
             }
@@ -474,14 +496,22 @@ public final class HeapSession implements AutoCloseable {
         }
         return switch (p.terminal()) {
             case DslParser.TopNTerminal t -> {
+                var rows = QueryEngine.topNFromBitSet(heap, registry, bits, t.n());
+                var truncated = new BitSet(heap.objectCount());
+                rows.forEach(r -> truncated.set(r.denseId()));
+                that = new BitSetAnswer(truncated, heap.objectCount());
+                thatHistId = histId;
+                yield JsonlFormatter.formatTopN(rows);
+            }
+            case DslParser.ShowNTerminal t -> {
                 that = new BitSetAnswer(bits, heap.objectCount());
                 thatHistId = histId;
                 yield JsonlFormatter.formatTopN(QueryEngine.topNFromBitSet(heap, registry, bits, t.n()));
             }
-            case DslParser.BottomNTerminal t -> {
+            case DslParser.SampleNTerminal t -> {
                 that = new BitSetAnswer(bits, heap.objectCount());
                 thatHistId = histId;
-                yield JsonlFormatter.formatTopN(QueryEngine.bottomNFromBitSet(heap, registry, bits, t.n()));
+                yield JsonlFormatter.formatTopN(QueryEngine.sampleFromBitSet(heap, registry, bits, t.n()));
             }
             case DslParser.AggregateCountTerminal ignored -> {
                 long count = bits.cardinality();

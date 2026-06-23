@@ -29,12 +29,20 @@ The REPL prompt shows the current result type and ID: `heapo s42>` means THAT is
 
 ## Workflow
 
-**Always use `heapo open --output jsonl` with a heredoc for multi-step analysis.** This gives you a stateful session (CALL THAT, named results, THAT as a source) and machine-readable output. Each command goes on its own line; output for each command follows immediately before the next command runs.
+**On a large heap dump, run `heapo unpack` before querying** — it builds all indexes up front with progress output, so you can see it working. On large dumps this can take several minutes.
+
+```bash
+heapo unpack DUMP
+```
+
+Progress is printed to stderr. Once it exits, indexes are cached on disk and subsequent runs are instant.
+
+**Then use `heapo open --output jsonl` with a heredoc for multi-step analysis.** This gives you a stateful session (CALL THAT, named results, THAT as a source) and machine-readable output. Each command goes on its own line; output for each command follows immediately before the next command runs.
 
 ```bash
 heapo open --output jsonl DUMP << 'EOF'
 STATUS
-TOP 10 BY retainedSize
+SHOW 10 BY retainedSize
 EOF
 ```
 
@@ -55,7 +63,7 @@ EOF
 
 ```bash
 heapo open --output jsonl DUMP << 'EOF'
-TOP 20 BY retainedSize
+SHOW 20 BY retainedSize
 EOF
 ```
 
@@ -63,7 +71,7 @@ Identify the classes contributing the most retained memory, then drill in:
 
 ```bash
 heapo open --output jsonl DUMP << 'EOF'
-CLASS com.example.Foo TOP 10 BY retainedSize
+CLASS com.example.Foo SHOW 10 BY retainedSize
 CLASS com.example.Foo SUM retainedSize
 EOF
 ```
@@ -82,7 +90,7 @@ Each line is the immediate dominator — the object that, if collected, would fr
 
 ```bash
 heapo open --output jsonl DUMP << 'EOF'
-ALL RETAINED BY i<id> TOP 20 BY retainedSize
+ALL RETAINED BY i<id> SHOW 20 BY retainedSize
 EOF
 ```
 
@@ -92,9 +100,9 @@ Shows all objects exclusively retained by `i<id>`, sorted by retained size.
 
 ```bash
 heapo open --output jsonl DUMP << 'EOF'
-CLASS com.example.Cache TOP 10 BY retainedSize
+CLASS com.example.Cache SHOW 10 BY retainedSize
 CALL THAT caches
-ALL RETAINED BY i<id> IN caches TOP 10 BY retainedSize
+ALL RETAINED BY i<id> IN caches SHOW 10 BY retainedSize
 EOF
 ```
 
@@ -112,9 +120,9 @@ EOF
 
 ### Pipeline model
 
-Queries compose as: **source** → zero or more **filters** → optional **display**.
+Queries compose as: **source** → zero or more **filters** → optional **terminal**.
 
-The result is always stored as a bitset in THAT. Display options control what is shown, not what is stored.
+The result is stored as a bitset in THAT. `TOP N` truncates THAT to the N largest objects; all other terminals leave THAT as the full filtered set.
 
 **Sources** (produce a bitset of objects):
 
@@ -156,31 +164,35 @@ ALL RETAINED BY i123 REFERENCING i456 TOP 10
 | `REFERENCING <source>` | Keep objects that have a direct outgoing reference to any object in source |
 | `REFERENCED BY <source>` | Keep objects directly referenced (pointed to) by any object in source |
 | `REACHABLE FROM <source>` | Keep objects transitively reachable (by following forward refs) from any object in source |
-| `WHERE <field> <op> <value>` | Keep objects whose primitive field satisfies the comparison (`>` `>=` `<` `<=` `=`). Class context required (use `CLASS <class>` or add `OF TYPE <class>` before WHERE). Value is a number or `true`/`false`. |
+| `WHERE <field> <op> <value>` | Keep objects whose field satisfies the comparison. Class context required (use `CLASS <class>` or add `OF TYPE <class>` before WHERE). Value is a number, `true`/`false`, or a string pattern for string-typed object fields. String patterns: `"exact"` (exact match), `"prefix"*` (startsWith), `*"suffix"` (endsWith), `*"sub"*` (contains). No spaces or backslashes inside quotes. |
 
-**Display options** (control what is shown; result is always a bitset in THAT):
+**Terminals** (end the pipeline):
 
-| Display | Shows |
+| Terminal | Description |
 |---|---|
-| `TOP <n> [BY retainedSize]` | Largest-N by retained size |
-| `BOTTOM <n> [BY retainedSize]` | Smallest-N by retained size |
+| `TOP <n> [BY retainedSize]` | Narrow THAT to the N largest objects and display them |
+| `SHOW <n> [BY retainedSize]` | Display the N largest without changing THAT |
+| `SAMPLE <n>` | Display N randomly sampled objects (reservoir sampling) |
 | `COUNT` | Total count |
 | `MAX retainedSize` | Maximum retained size |
 | `SUM retainedSize` | Sum of retained sizes |
-| _(none)_ | Top 10 by retained size |
+| _(none)_ | Display top 10 by retained size |
+
+Use `TOP` when you want a smaller set to filter against or anchor a chain. Use `SHOW` when you just want to see N rows but keep the full set in THAT for follow-up queries.
 
 **Examples:**
 
 ```
 CLASS com.example.Foo                              # all Foo instances
-CLASS com.example.Foo TOP 10 BY retainedSize       # top 10 Foos
-TOP 20 BY retainedSize                             # top 20 across all classes
-ALL RETAINED BY i1234 TOP 10                       # dominator subtree of i1234
+CLASS com.example.Foo SHOW 10 BY retainedSize      # display top 10 Foos, keep all in THAT
+CLASS com.example.Foo TOP 10 BY retainedSize       # narrow THAT to the 10 largest Foos
+SHOW 20 BY retainedSize                            # display top 20 across all classes
+ALL RETAINED BY i1234 SHOW 10                      # display dominator subtree of i1234
 Threads REFERENCING i456                           # threads that hold i456
-ALL IN suspects NOT IN excluded TOP 20             # set difference
+ALL IN suspects NOT IN excluded SHOW 20            # set difference (display 20)
 mySet COUNT                                        # count objects in named set
-THAT TOP 5 BY retainedSize                         # re-display current result
-i1234 TOP 1                                        # inspect one object
+THAT SHOW 5 BY retainedSize                        # display 5 rows from current THAT
+i1234 TOP 1                                        # THAT becomes just i1234 (useful as anchor)
 ```
 
 ### Other queries
@@ -192,6 +204,7 @@ i1234 TOP 1                                        # inspect one object
 | `NAMES [<glob>]` | Named results; glob filters by name (omit for all) |
 | `EXPLAIN <name>` | Show which history command produced the named result (provenance) |
 | `EXPLAIN i<id>` | Dominator chain from object to GC root |
+| `INSPECT i<id>` | Show all fields of object i<id> |
 
 ## Output formats
 
@@ -205,7 +218,7 @@ Both `heapo open` and `heapo query` accept `--output`.
 
 ## JSONL field reference
 
-**TOP / BOTTOM / RETAINING / RETAINED BY rows:**
+**TOP / SHOW / RETAINING / RETAINED BY rows:**
 ```json
 {"rank":0,"id":"i12345","type":"java.util.HashMap","retainedSize":2097152,"shallowSize":48}
 {"rank":1,"id":"i99","type":"java.lang.String","retainedSize":1024,"shallowSize":24,"description":"hello world"}
@@ -220,7 +233,16 @@ The optional `description` field provides a human-readable summary of the object
 {"depth":2,"id":"i7","type":"java.lang.Class","field":"cache","retainedSize":16777216,"description":"com.example.Cache.class","notes":"GC root (system class)"}
 ```
 
-The optional `field` names the field in this object that directly references the object on the prior line (`"[N]"` for array slot N, `"(indirect)"` if the dominator has no direct edge). The optional `description` field provides a human-readable summary of the object's value (same as in TOP/BOTTOM rows). The optional `notes` field carries extra context such as GC root type.
+The optional `field` names the field in this object that directly references the object on the prior line (`"[N]"` for array slot N, `"(indirect)"` if the dominator has no direct edge). The optional `description` field provides a human-readable summary of the object's value (same as in TOP/SHOW rows). The optional `notes` field carries extra context such as GC root type.
+
+**INSPECT rows** (one row per field, in declaration order):
+```json
+{"field":"name","id":"i99","type":"java.lang.String","retainedSize":24,"shallowSize":24,"description":"write"}
+{"field":"handler","id":"null"}
+{"field":"maximumPoolSize","type":"int","description":"4"}
+```
+
+Object reference fields emit `id`, `type`, `retainedSize`, `shallowSize`, and optionally `description`. Null references emit only `id: "null"`. Primitive fields emit `type` (the Java type name) and `description` (the formatted value). For object arrays, field names are `[0]`, `[1]`, … (non-null elements only). For primitive arrays, field names are `[0]`, `[1]`, … capped at 100 elements.
 
 **CLASSES rows:**
 ```json
@@ -251,12 +273,12 @@ Every conclusion presented to the user must be accompanied by the command(s) tha
 
 Show only the DSL commands — not the full `heapo open` invocation — since the user already has the dump open and can run them directly. Obtain human-readable output by running a separate `--output human` invocation yourself; do not show raw JSONL to the user.
 
-Format: state the conclusion, then show the evidence inline. Prefix each command with `heapo>` for clarity:
+Format: state the conclusion, then show the evidence inline:
 
 ```
 The cache is retaining 450 MB — two instances, one per shard.
 
-  heapo> CLASS com.example.Cache TOP 5 BY retainedSize
+  CLASS com.example.Cache SHOW 5 BY retainedSize
    rank  id      type                retained   shallow
       1  i4521   com.example.Cache   225.1 MB    48 B
       2  i4888   com.example.Cache   224.8 MB    48 B

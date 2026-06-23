@@ -62,6 +62,28 @@ public final class JsonlFormatter {
             + "\",\"retainedSize\":" + value + "}\n";
     }
 
+    public static String formatInspect(List<FieldRow> rows) {
+        var sb = new StringBuilder();
+        for (var r : rows) {
+            sb.append("{\"field\":\"").append(esc(r.fieldName())).append('"');
+            if (r.isNullRef()) {
+                sb.append(",\"id\":\"null\"");
+            } else if (r.isObject()) {
+                sb.append(",\"id\":\"i").append(r.refDenseId()).append('"')
+                  .append(",\"type\":\"").append(esc(r.className())).append('"')
+                  .append(",\"retainedSize\":").append(r.retainedSize())
+                  .append(",\"shallowSize\":").append(r.shallowSize());
+                if (r.description() != null)
+                    sb.append(",\"description\":\"").append(descEsc(r.description())).append('"');
+            } else if (r.isPrimitive()) {
+                sb.append(",\"type\":\"").append(esc(r.primType())).append('"')
+                  .append(",\"description\":\"").append(descEsc(r.description() != null ? r.description() : "")).append('"');
+            }
+            sb.append("}\n");
+        }
+        return sb.toString();
+    }
+
     private static String esc(String s) {
         return s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
