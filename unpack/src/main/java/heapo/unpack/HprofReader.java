@@ -214,16 +214,21 @@ public final class HprofReader {
 
         // static fields — buffer object refs; fired after classDump so handler has the dense ID
         int staticCount = in.readUnsignedShort();
-        long[] staticObjectRefs = null;
+        long[] staticObjectRefs     = null;
+        long[] staticObjectNameIds  = null;
         int staticObjectCount = 0;
         for (int i = 0; i < staticCount; i++) {
-            readId(in, idSize); // name string id
+            long nameStringId = readId(in, idSize);
             int type = in.readUnsignedByte();
             if (type == TYPE_OBJECT) {
                 long ref = readId(in, idSize);
                 if (ref != 0) {
-                    if (staticObjectRefs == null) staticObjectRefs = new long[staticCount];
-                    staticObjectRefs[staticObjectCount++] = ref;
+                    if (staticObjectRefs == null) {
+                        staticObjectRefs    = new long[staticCount];
+                        staticObjectNameIds = new long[staticCount];
+                    }
+                    staticObjectNameIds[staticObjectCount] = nameStringId;
+                    staticObjectRefs[staticObjectCount++]  = ref;
                 }
             } else {
                 in.skipNBytes(typeSize(type, idSize));
@@ -243,7 +248,7 @@ public final class HprofReader {
         // Fire static object refs after classDump so handlers have the dense ID available
         if (staticObjectRefs != null) {
             for (int i = 0; i < staticObjectCount; i++) {
-                h.staticObjectField(classObjectId, staticObjectRefs[i]);
+                h.staticObjectField(classObjectId, staticObjectNameIds[i], staticObjectRefs[i]);
             }
         }
     }

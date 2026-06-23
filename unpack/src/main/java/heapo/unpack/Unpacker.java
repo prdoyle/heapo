@@ -65,6 +65,7 @@ public final class Unpacker {
         Files.createDirectories(fieldsDir);
         finaliseFieldValues(handler, fieldValuesTempDir, fieldsDir);
         writeFieldSchemas(handler, fieldsDir);
+        writeStaticFieldSchemas(handler, fieldsDir);
 
         buildPrimArrayIndex(primArrayScratch, indexDir, objectCount);
 
@@ -83,13 +84,14 @@ public final class Unpacker {
     static final class ScanHandler extends BaseHprofHandler {
 
         // Small maps — bounded by class/string count
-        final Map<Long, String>  strings       = new HashMap<>();
-        final Map<Long, Long>    classNameIds  = new HashMap<>();  // classObjectId → nameStringId
-        final Map<Long, Long>    superClasses  = new HashMap<>();  // classObjectId → superRawId
-        final Map<Long, byte[]>  classFields   = new HashMap<>();  // classObjectId → field types
-        final Map<Long, long[]>  classFieldNames = new HashMap<>(); // classObjectId → field name string IDs
-        final Map<Long, Integer> instanceSizes = new HashMap<>();   // classObjectId → instanceSize
-        final Map<Long, Integer> classDenseIds = new HashMap<>();   // classObjectId → dense ID
+        final Map<Long, String>        strings            = new HashMap<>();
+        final Map<Long, Long>          classNameIds       = new HashMap<>();  // classObjectId → nameStringId
+        final Map<Long, Long>          superClasses       = new HashMap<>();  // classObjectId → superRawId
+        final Map<Long, byte[]>        classFields        = new HashMap<>();  // classObjectId → field types
+        final Map<Long, long[]>        classFieldNames    = new HashMap<>();  // classObjectId → field name string IDs
+        final Map<Long, Integer>       instanceSizes      = new HashMap<>();  // classObjectId → instanceSize
+        final Map<Long, Integer>       classDenseIds      = new HashMap<>();  // classObjectId → dense ID
+        final Map<Long, List<String>>  staticFieldNames   = new HashMap<>();  // classObjectId → static obj-ref field names (non-null only, in order)
 
         // Detected in loadClass (LOAD_CLASS records precede HEAP_DUMP in the file)
         long javaLangClassRawId = 0;
@@ -170,9 +172,11 @@ public final class Unpacker {
         private int currentClassDenseId = -1;
 
         @Override
-        public void staticObjectField(long classObjectId, long valueRawId) throws IOException {
+        public void staticObjectField(long classObjectId, long nameStringId, long valueRawId) throws IOException {
             // classDump fired first (HprofReader guarantees this), so dense ID is assigned
             if (currentClassDenseId >= 0) emitEdge(currentClassDenseId, valueRawId);
+            String name = strings.getOrDefault(nameStringId, "?");
+            staticFieldNames.computeIfAbsent(classObjectId, k -> new ArrayList<>()).add(name);
         }
 
         @Override
@@ -499,6 +503,17 @@ public final class Unpacker {
                 Files.writeString(fieldsDir.resolve(classDenseId + ".schema"),
                     String.join("\n", lines) + "\n");
             }
+        }
+    }
+
+    private static void writeStaticFieldSchemas(ScanHandler handler, Path fieldsDir) throws IOException {
+        for (var entry : handler.staticFieldNames.entrySet()) {
+            long classObjectId = entry.getKey();
+            List<String> names = entry.getValue();
+            Integer denseId = handler.classDenseIds.get(classObjectId);
+            if (denseId == null || names.isEmpty()) continue;
+            Files.writeString(fieldsDir.resolve(denseId + ".static-schema"),
+                String.join("\n", names) + "\n");
         }
     }
 

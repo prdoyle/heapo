@@ -188,6 +188,18 @@ public final class IndexRegistry implements AutoCloseable {
         return Collections.unmodifiableList(defs);
     }
 
+    /**
+     * Returns the static object-reference field names for the given class dense ID, in the order
+     * edges were emitted (non-null statics only). Returns an empty list if no file exists.
+     */
+    public List<String> loadStaticFieldNames(int classDenseId) throws IOException {
+        Path p = heap.outputDir().resolve("fields/" + classDenseId + ".static-schema");
+        if (!Files.exists(p)) return List.of();
+        return Files.readAllLines(p).stream()
+                .filter(l -> !l.isBlank())
+                .toList();
+    }
+
     /** Total size in bytes of one instance's packed primitive record for the given schema. */
     public static int fieldRecordSize(List<FieldDef> schema) {
         for (int i = schema.size() - 1; i >= 0; i--) {

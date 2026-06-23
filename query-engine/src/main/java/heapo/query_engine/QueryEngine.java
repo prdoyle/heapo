@@ -175,6 +175,8 @@ public final class QueryEngine {
                     via = "(indirect)";
                 } else if (parentClass.startsWith("[")) {
                     via = "[" + relPos + "]";
+                } else if ("java.lang.Class".equals(parentClass)) {
+                    via = staticFieldName(parentId, relPos, registry);
                 } else {
                     via = objectFieldName(parentClassDid, relPos, registry);
                 }
@@ -205,6 +207,12 @@ public final class QueryEngine {
         }
 
         return path;
+    }
+
+    private static String staticFieldName(int classDenseId, int relPos, IndexRegistry registry)
+            throws IOException {
+        var names = registry.loadStaticFieldNames(classDenseId);
+        return (relPos < names.size()) ? names.get(relPos) : "(indirect)";
     }
 
     private static String gcRootTypeLabel(byte[] typeMap, int denseId) {
