@@ -120,9 +120,10 @@ public final class QueryEngine {
      */
     public static List<ExplainNode> explain(UnpackedHeap heap, IndexRegistry registry,
                                              int denseId) throws IOException {
-        var names     = ClassNameIndex.load(heap);
-        var path      = new ArrayList<ExplainNode>();
-        var classDids = new ArrayList<Integer>();
+        var names      = ClassNameIndex.load(heap);
+        var path       = new ArrayList<ExplainNode>();
+        var classDids  = new ArrayList<Integer>();
+        byte[] gcRootTypeMap = registry.loadGcRootTypeMap();
 
         try (var idom     = registry.openIdom();
              var retained = registry.openRetainedSize();
@@ -142,7 +143,10 @@ public final class QueryEngine {
                     String represented = names.nameOf(cur);
                     if (!"?".equals(represented)) notes = represented + ".class";
                 }
-                if (isGcRoot) notes = notes == null ? "GC root" : notes + "; GC root";
+                if (isGcRoot) {
+                    String gcRootLabel = gcRootTypeLabel(gcRootTypeMap, cur);
+                    notes = notes == null ? gcRootLabel : notes + "; " + gcRootLabel;
+                }
 
                 long retainedSize = retained.readLong(cur);
                 path.add(new ExplainNode(cur, className, retainedSize, depth++, notes));
@@ -180,6 +184,21 @@ public final class QueryEngine {
             }
         }
         return path;
+    }
+
+    private static String gcRootTypeLabel(byte[] typeMap, int denseId) {
+        if (typeMap == null || denseId < 0 || denseId >= typeMap.length) return "GC root";
+        return switch (typeMap[denseId] & 0xFF) {
+            case HprofReader.HPROF_GC_ROOT_STICKY_CLASS  -> "GC root (system class)";
+            case HprofReader.HPROF_GC_ROOT_JNI_GLOBAL    -> "GC root (JNI global)";
+            case HprofReader.HPROF_GC_ROOT_JNI_LOCAL     -> "GC root (JNI local)";
+            case HprofReader.HPROF_GC_ROOT_JAVA_FRAME    -> "GC root (Java frame)";
+            case HprofReader.HPROF_GC_ROOT_NATIVE_STACK  -> "GC root (native stack)";
+            case HprofReader.HPROF_GC_ROOT_THREAD_BLOCK  -> "GC root (thread block)";
+            case HprofReader.HPROF_GC_ROOT_MONITOR_USED  -> "GC root (monitor used)";
+            case HprofReader.HPROF_GC_ROOT_THREAD_OBJ    -> "GC root (thread object)";
+            default                                       -> "GC root";
+        };
     }
 
     private static String objectFieldName(int classDenseId, int refPos, IndexRegistry registry)

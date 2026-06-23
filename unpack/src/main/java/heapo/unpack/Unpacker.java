@@ -57,7 +57,8 @@ public final class Unpacker {
                        sortedRawIds, denseIds, objectCount);
         buildForwardRefs(scratchEdges, tempDir, indexDir, sortedRawIds, denseIds, objectCount);
         buildSuperClassOf(handler.superClasses, indexDir, sortedRawIds, denseIds, objectCount);
-        buildGcRoots(handler.gcRootRawIds, indexDir, sortedRawIds, denseIds);
+        buildGcRoots(handler.gcRootRawIds, handler.gcRootTypes, indexDir,
+                     sortedRawIds, denseIds, objectCount);
 
         // Build field-value index: per-class primitive field files + schemas
         Path fieldsDir = outputDir.resolve("fields");
@@ -93,7 +94,8 @@ public final class Unpacker {
         // Detected in loadClass (LOAD_CLASS records precede HEAP_DUMP in the file)
         long javaLangClassRawId = 0;
 
-        final List<Long> gcRootRawIds = new ArrayList<>();
+        final List<Long>      gcRootRawIds = new ArrayList<>();
+        final Map<Long, Byte> gcRootTypes  = new HashMap<>();
 
         int nextId = 0;
         int classCount = 0;
@@ -211,15 +213,20 @@ public final class Unpacker {
 
         // ── GC root collectors ─────────────────────────────────────────────────
 
-        @Override public void gcRootUnknown(long id)                           { gcRootRawIds.add(id); }
-        @Override public void gcRootJniGlobal(long id, long ref)              { gcRootRawIds.add(id); }
-        @Override public void gcRootJniLocal(long id, int ts, int fn)         { gcRootRawIds.add(id); }
-        @Override public void gcRootJavaFrame(long id, int ts, int fn)        { gcRootRawIds.add(id); }
-        @Override public void gcRootNativeStack(long id, int ts)              { gcRootRawIds.add(id); }
-        @Override public void gcRootStickyClass(long id)                      { gcRootRawIds.add(id); }
-        @Override public void gcRootThreadBlock(long id, int ts)              { gcRootRawIds.add(id); }
-        @Override public void gcRootMonitorUsed(long id)                      { gcRootRawIds.add(id); }
-        @Override public void gcRootThreadObj(long id, int ts, int ss)        { gcRootRawIds.add(id); }
+        @Override public void gcRootUnknown(long id)                    { addRoot(id, HprofReader.HPROF_GC_ROOT_UNKNOWN); }
+        @Override public void gcRootJniGlobal(long id, long ref)        { addRoot(id, HprofReader.HPROF_GC_ROOT_JNI_GLOBAL); }
+        @Override public void gcRootJniLocal(long id, int ts, int fn)   { addRoot(id, HprofReader.HPROF_GC_ROOT_JNI_LOCAL); }
+        @Override public void gcRootJavaFrame(long id, int ts, int fn)  { addRoot(id, HprofReader.HPROF_GC_ROOT_JAVA_FRAME); }
+        @Override public void gcRootNativeStack(long id, int ts)        { addRoot(id, HprofReader.HPROF_GC_ROOT_NATIVE_STACK); }
+        @Override public void gcRootStickyClass(long id)                { addRoot(id, HprofReader.HPROF_GC_ROOT_STICKY_CLASS); }
+        @Override public void gcRootThreadBlock(long id, int ts)        { addRoot(id, HprofReader.HPROF_GC_ROOT_THREAD_BLOCK); }
+        @Override public void gcRootMonitorUsed(long id)                { addRoot(id, HprofReader.HPROF_GC_ROOT_MONITOR_USED); }
+        @Override public void gcRootThreadObj(long id, int ts, int ss)  { addRoot(id, HprofReader.HPROF_GC_ROOT_THREAD_OBJ); }
+
+        private void addRoot(long rawId, int type) {
+            gcRootRawIds.add(rawId);
+            gcRootTypes.putIfAbsent(rawId, (byte) type);
+        }
 
         // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -429,8 +436,9 @@ public final class Unpacker {
 
     // ── Post-scan: gc-roots ───────────────────────────────────────────────────
 
-    private static void buildGcRoots(List<Long> gcRootRawIds, Path indexDir,
-                                     long[] sortedRawIds, int[] denseIds) throws IOException {
+    private static void buildGcRoots(List<Long> gcRootRawIds, Map<Long, Byte> gcRootTypes,
+                                     Path indexDir, long[] sortedRawIds, int[] denseIds,
+                                     int objectCount) throws IOException {
         var seen  = new HashSet<Integer>();
         var roots = new ArrayList<Integer>();
         for (long rawId : gcRootRawIds) {
@@ -440,6 +448,14 @@ public final class Unpacker {
         try (var out = dataOut(indexDir.resolve("gc-roots.bin"))) {
             for (int id : roots) out.writeInt(id);
         }
+
+        // gc-root-type-map.bin: one byte per dense ID, 0 = not a root, else HPROF_GC_ROOT_* type
+        byte[] typeMap = new byte[objectCount];
+        for (var entry : gcRootTypes.entrySet()) {
+            int dense = resolveDenseId(entry.getKey(), sortedRawIds, denseIds);
+            if (dense >= 0 && dense < objectCount) typeMap[dense] = entry.getValue();
+        }
+        Files.write(indexDir.resolve("gc-root-type-map.bin"), typeMap);
     }
 
     // ── Post-scan: field values ───────────────────────────────────────────────

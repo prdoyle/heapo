@@ -147,6 +147,15 @@ public final class IndexRegistry implements AutoCloseable {
         return IndexFile.openRead(indexDir.resolve("gc-roots.bin"));
     }
 
+    /**
+     * Returns the raw bytes of gc-root-type-map.bin (one byte per dense ID, 0 = not a root),
+     * or null if the file does not exist (indexes built before this feature was added).
+     */
+    public byte[] loadGcRootTypeMap() throws IOException {
+        Path p = indexDir.resolve("gc-root-type-map.bin");
+        return Files.exists(p) ? Files.readAllBytes(p) : null;
+    }
+
     // ── Field-value index ─────────────────────────────────────────────────────
 
     /**
