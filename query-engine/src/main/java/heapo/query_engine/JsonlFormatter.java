@@ -45,10 +45,9 @@ public final class JsonlFormatter {
         for (var node : path) {
             sb.append("{\"depth\":").append(node.depth())
               .append(",\"id\":\"i").append(node.denseId()).append('"')
-              .append(",\"type\":\"").append(esc(node.className())).append('"');
-            if (node.field() != null)
-                sb.append(",\"field\":\"").append(esc(node.field())).append('"');
-            sb.append(",\"retainedSize\":").append(node.retainedSize());
+              .append(",\"type\":\"").append(esc(node.className())).append('"')
+              .append(",\"field\":\"").append(node.field() != null ? esc(node.field()) : "").append('"')
+              .append(",\"retainedSize\":").append(node.retainedSize());
             if (node.description() != null)
                 sb.append(",\"description\":\"").append(esc(node.description())).append('"');
             if (node.notes() != null)
