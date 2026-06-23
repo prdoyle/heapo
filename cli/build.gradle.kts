@@ -5,7 +5,10 @@ plugins {
 application {
     mainClass = "heapo.cli.Main"
     applicationName = "heapo"
-    applicationDefaultJvmArgs = listOf("--enable-preview")
+    applicationDefaultJvmArgs = listOf(
+        "--enable-preview",
+        "--enable-native-access=ALL-UNNAMED"
+    )
 }
 
 dependencies {
