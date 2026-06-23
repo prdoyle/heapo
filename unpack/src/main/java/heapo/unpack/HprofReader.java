@@ -3,11 +3,14 @@ package heapo.unpack;
 import java.io.BufferedInputStream;
 import java.io.DataInputStream;
 import java.io.EOFException;
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.zip.GZIPInputStream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipFile;
 
 /**
  * Streaming HPROF binary format reader. Parses records one at a time and
@@ -64,35 +67,71 @@ public final class HprofReader {
     }
 
     public void read(HprofHandler handler) throws IOException {
-        boolean isGzip;
-        try (var probe = Files.newInputStream(hprofPath)) {
-            byte[] magic = probe.readNBytes(2);
-            isGzip = magic.length == 2 && (magic[0] & 0xFF) == 0x1f && (magic[1] & 0xFF) == 0x8b;
-        }
-        try (InputStream fileIn = Files.newInputStream(hprofPath)) {
-        InputStream decompressed = isGzip ? new GZIPInputStream(fileIn) : fileIn;
-        try (var raw = new BufferedInputStream(decompressed, 1 << 20)) {
-            var in = new CountingInputStream(raw);
-            readHeader(in, handler);
-            while (true) {
-                int tag;
-                try {
-                    tag = in.readUnsignedByte();
-                } catch (EOFException e) {
-                    break;
-                }
-                int timestamp = in.readInt();
-                long length = Integer.toUnsignedLong(in.readInt());
+        try (InputStream content = openContent()) {
+            try (var raw = new BufferedInputStream(content, 1 << 20)) {
+                var in = new CountingInputStream(raw);
+                readHeader(in, handler);
+                while (true) {
+                    int tag;
+                    try {
+                        tag = in.readUnsignedByte();
+                    } catch (EOFException e) {
+                        break;
+                    }
+                    int timestamp = in.readInt();
+                    long length = Integer.toUnsignedLong(in.readInt());
 
-                switch (tag) {
-                    case TAG_STRING -> readString(in, length, handler);
-                    case TAG_LOAD_CLASS -> readLoadClass(in, handler);
-                    case TAG_HEAP_DUMP, TAG_HEAP_DUMP_SEGMENT -> readHeapDump(in, length, handler);
-                    case TAG_HEAP_DUMP_END -> handler.heapDumpEnd();
-                    default -> in.skipNBytes(length);
+                    switch (tag) {
+                        case TAG_STRING -> readString(in, length, handler);
+                        case TAG_LOAD_CLASS -> readLoadClass(in, handler);
+                        case TAG_HEAP_DUMP, TAG_HEAP_DUMP_SEGMENT -> readHeapDump(in, length, handler);
+                        case TAG_HEAP_DUMP_END -> handler.heapDumpEnd();
+                        default -> in.skipNBytes(length);
+                    }
                 }
             }
         }
+    }
+
+    private InputStream openContent() throws IOException {
+        byte[] magic;
+        try (var probe = Files.newInputStream(hprofPath)) {
+            magic = probe.readNBytes(2);
+        }
+        int b0 = magic.length > 0 ? (magic[0] & 0xFF) : -1;
+        int b1 = magic.length > 1 ? (magic[1] & 0xFF) : -1;
+
+        if (b0 == 0x1f && b1 == 0x8b) {
+            return new GZIPInputStream(Files.newInputStream(hprofPath));
+        }
+        if (b0 == 0x50 && b1 == 0x4b) {
+            return openZipEntry();
+        }
+        return Files.newInputStream(hprofPath);
+    }
+
+    private InputStream openZipEntry() throws IOException {
+        var zf = new ZipFile(hprofPath.toFile());
+        try {
+            var entries = zf.entries();
+            ZipEntry first = null;
+            ZipEntry hprof = null;
+            while (entries.hasMoreElements()) {
+                ZipEntry e = entries.nextElement();
+                if (first == null) first = e;
+                if (e.getName().endsWith(".hprof")) { hprof = e; break; }
+            }
+            ZipEntry chosen = hprof != null ? hprof : first;
+            if (chosen == null) throw new IOException("ZIP file is empty: " + hprofPath);
+            InputStream entryStream = zf.getInputStream(chosen);
+            return new FilterInputStream(entryStream) {
+                @Override public void close() throws IOException {
+                    try { super.close(); } finally { zf.close(); }
+                }
+            };
+        } catch (IOException e) {
+            zf.close();
+            throw e;
         }
     }
 
