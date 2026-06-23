@@ -79,7 +79,7 @@ Identify the classes contributing the most retained memory, then drill in:
 printf 'EXPLAIN i<id>\n' | heapo open --output jsonl DUMP
 ```
 
-Each line is the immediate dominator — the object that, if collected, would free everything below it. Walk the chain upward to find the GC root preventing collection. The optional `via` field names the field in the parent object that directly references the child.
+Each line is the immediate dominator — the object that, if collected, would free everything below it. Walk the chain upward to find the GC root preventing collection. The optional `field` names the field in this object that directly references the object on the prior line.
 
 ### 4. Explore a dominator subtree
 
@@ -204,12 +204,12 @@ The optional `description` field provides a human-readable summary of the object
 
 **EXPLAIN rows** (`depth` 0 = the queried object; increasing depth = toward GC root):
 ```json
-{"depth":0,"id":"i12345","type":"java.util.HashMap","retainedSize":2097152,"via":"table"}
-{"depth":1,"id":"i99","type":"com.example.Cache","retainedSize":8388608,"via":"cache"}
-{"depth":2,"id":"i7","type":"java.lang.Class","retainedSize":16777216,"notes":"com.example.Cache.class"}
+{"depth":0,"id":"i12345","type":"java.util.HashMap","retainedSize":2097152}
+{"depth":1,"id":"i99","type":"com.example.Cache","field":"table","retainedSize":8388608}
+{"depth":2,"id":"i7","type":"java.lang.Class","field":"cache","retainedSize":16777216,"description":"com.example.Cache.class","notes":"GC root (system class)"}
 ```
 
-The optional `via` field names the field in the parent object that directly references this object (`"[N]"` for array slot N, `"(indirect)"` if the dominator has no direct edge). The optional `notes` field carries other freeform context; for `java.lang.Class` objects it names the class represented, indicating the object is held via a static field on that class.
+The optional `field` names the field in this object that directly references the object on the prior line (`"[N]"` for array slot N, `"(indirect)"` if the dominator has no direct edge). The optional `description` field provides a human-readable summary of the object's value (same as in TOP/BOTTOM rows). The optional `notes` field carries extra context such as GC root type.
 
 **CLASSES rows:**
 ```json

@@ -155,7 +155,7 @@ public final class QueryEngine {
                 cur = nextCur;
             }
 
-            // Annotate each node with the field in its parent that directly references it.
+            // Annotate each parent node with the field it uses to reference its child.
             // path[i] is the child, path[i+1] is the parent (dominator).
             for (int i = 0; i < path.size() - 1; i++) {
                 int    childId        = path.get(i).denseId();
@@ -170,21 +170,21 @@ public final class QueryEngine {
                     if (fwd.edge(pos) == childId) { relPos = (int)(pos - start); break; }
                 }
 
-                String via;
+                String field;
                 if (relPos < 0) {
-                    via = "(indirect)";
+                    field = "(indirect)";
                 } else if (parentClass.startsWith("[")) {
-                    via = "[" + relPos + "]";
+                    field = "[" + relPos + "]";
                 } else if ("java.lang.Class".equals(parentClass)) {
-                    via = staticFieldName(parentId, relPos, registry);
+                    field = staticFieldName(parentId, relPos, registry);
                 } else {
-                    via = objectFieldName(parentClassDid, relPos, registry);
+                    field = objectFieldName(parentClassDid, relPos, registry);
                 }
 
-                ExplainNode node = path.get(i);
-                path.set(i, new ExplainNode(node.denseId(), node.className(),
-                                             node.retainedSize(), node.depth(),
-                                             node.description(), node.notes(), via));
+                ExplainNode parent = path.get(i + 1);
+                path.set(i + 1, new ExplainNode(parent.denseId(), parent.className(),
+                                                  parent.retainedSize(), parent.depth(),
+                                                  parent.description(), parent.notes(), field));
             }
         }
 
@@ -200,7 +200,7 @@ public final class QueryEngine {
                         if (content != null)
                             path.set(i, new ExplainNode(node.denseId(), node.className(),
                                                          node.retainedSize(), node.depth(),
-                                                         content, node.notes(), node.via()));
+                                                         content, node.notes(), node.field()));
                     }
                 }
             }
