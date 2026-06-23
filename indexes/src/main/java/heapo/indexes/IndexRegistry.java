@@ -59,11 +59,36 @@ public final class IndexRegistry implements AutoCloseable {
 
     /** Build all derived indexes in dependency order. */
     public void buildAll() throws IOException {
-        ensureInstanceList();
-        ensureReverseRefs();
-        ensureDfsTree();
-        ensureDominators();
-        ensureRetainedSizes();
+        buildAll(msg -> {});
+    }
+
+    /**
+     * Build all derived indexes in dependency order, reporting each phase that
+     * actually needs building to {@code progress}. Already-built phases are silent.
+     */
+    public void buildAll(java.util.function.Consumer<String> progress) throws IOException {
+        if (!exists("instance-list-offsets.bin", "instance-list-edges.bin")) {
+            progress.accept("Building instance list...");
+            ensureInstanceList();
+        }
+        if (!exists("reverse-refs-offsets.bin", "reverse-refs-edges.bin")) {
+            progress.accept("Building reverse refs...");
+            ensureReverseRefs();
+        }
+        if (!exists("dfs-num.bin", "dfs-vertex.bin", "dfs-parent.bin")) {
+            progress.accept("Building DFS tree...");
+            ensureDfsTree();
+        }
+        if (!exists("idom.bin")) {
+            progress.accept("Building dominator tree...");
+            ensureDominators();
+        }
+        if (!exists("retained-size.bin", "retained-size-rank.bin",
+                    "dominator-children-offsets.bin", "dominator-children-edges.bin",
+                    "dominator-subtree-size.bin")) {
+            progress.accept("Computing retained sizes...");
+            ensureRetainedSizes();
+        }
     }
 
     // ── Reader accessors ──────────────────────────────────────────────────────

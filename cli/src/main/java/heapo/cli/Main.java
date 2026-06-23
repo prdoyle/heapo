@@ -147,9 +147,12 @@ public final class Main implements Runnable {
             Path outDir = resolveOutDir(hprofFile, heapDir);
             Files.createDirectories(outDir);
 
+            long hprofBytes = Files.size(hprofFile);
+            System.err.printf("Scanning heap dump (%.1f MB)...%n", hprofBytes / 1_048_576.0);
             UnpackedHeap heap = Unpacker.unpack(hprofFile, outDir);
-            var          reg  = new IndexRegistry(heap);
-            reg.buildAll();
+            System.err.printf("  %,d objects, %,d classes%n", heap.objectCount(), heap.classCount());
+            var reg = new IndexRegistry(heap);
+            reg.buildAll(msg -> System.err.println(msg));
 
             Path dbPath = outDir.resolve("sql.db");
             try (var terminal = TerminalBuilder.builder().build();
@@ -497,9 +500,12 @@ public final class Main implements Runnable {
             Path outDir = resolveOutDir(hprofFile, heapDir);
             Files.createDirectories(outDir);
 
+            long hprofBytes = Files.size(hprofFile);
+            System.err.printf("Scanning heap dump (%.1f MB)...%n", hprofBytes / 1_048_576.0);
             UnpackedHeap heap = Unpacker.unpack(hprofFile, outDir);
-            var          reg  = new IndexRegistry(heap);
-            reg.buildAll();
+            System.err.printf("  %,d objects, %,d classes%n", heap.objectCount(), heap.classCount());
+            var reg = new IndexRegistry(heap);
+            reg.buildAll(msg -> System.err.println(msg));
 
             System.out.println("Indexes built: " + outDir.toAbsolutePath());
             return 0;
