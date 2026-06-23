@@ -282,15 +282,15 @@ class HeapSessionTest {
         }
     }
 
-    // ── Phase: Pipeline (FROM / IN / NOT IN) ─────────────────────────────────
+    // ── Phase: Pipeline (source / IN / NOT IN) ───────────────────────────────
 
     @Test
     void fromThatAfterAllClassWorks() throws Exception {
         Path p = tempRoot.resolve("from-that.db");
         try (var session = new HeapSession(heap, registry, p)) {
             session.execute("CLASS heapo.samples.KnownObjects$Bar");
-            String result = session.execute("FROM THAT TOP 5 BY retainedSize");
-            assertFalse(result.contains("\"error\""), "FROM THAT should succeed: " + result);
+            String result = session.execute("THAT TOP 5 BY retainedSize");
+            assertFalse(result.contains("\"error\""), "THAT as source should succeed: " + result);
             assertTrue(result.contains("\"rank\""), "Should show ranked rows");
         }
     }
@@ -301,8 +301,8 @@ class HeapSessionTest {
         try (var session = new HeapSession(heap, registry, p)) {
             session.execute("CLASS heapo.samples.KnownObjects$Bar");
             session.execute("CALL THAT bars");
-            String result = session.execute("FROM bars TOP 5 BY retainedSize");
-            assertFalse(result.contains("\"error\""), "FROM <name> should succeed: " + result);
+            String result = session.execute("bars TOP 5 BY retainedSize");
+            assertFalse(result.contains("\"error\""), "Named source should succeed: " + result);
             assertTrue(result.contains("\"rank\""), "Should show ranked rows");
         }
     }
@@ -353,9 +353,9 @@ class HeapSessionTest {
             session.execute("CALL THAT bars");
 
             String allCount  = session.execute("CLASS heapo.samples.KnownObjects$Bar COUNT");
-            String fromCount = session.execute("FROM bars COUNT");
+            String fromCount = session.execute("bars COUNT");
 
-            assertFalse(fromCount.contains("\"error\""), "FROM <name> COUNT should succeed");
+            assertFalse(fromCount.contains("\"error\""), "Named source COUNT should succeed");
             // Both should report the same count
             assertTrue(fromCount.contains("\"count\""), "Should have count field");
         }
@@ -390,7 +390,7 @@ class HeapSessionTest {
     void gcRootsBuiltinReturnsNonEmptyBitSet() throws Exception {
         Path p = tempRoot.resolve("builtin-gcroots.db");
         try (var session = new HeapSession(heap, registry, p)) {
-            String result = session.execute("FROM GcRoots COUNT");
+            String result = session.execute("GcRoots COUNT");
             assertFalse(result.contains("\"error\""), "GcRoots should resolve: " + result);
             assertTrue(result.contains("\"count\""), "Should return count");
             long count = Long.parseLong(result.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
@@ -402,7 +402,7 @@ class HeapSessionTest {
     void threadsBuiltinReturnsZeroOrMore() throws Exception {
         Path p = tempRoot.resolve("builtin-threads.db");
         try (var session = new HeapSession(heap, registry, p)) {
-            String result = session.execute("FROM Threads COUNT");
+            String result = session.execute("Threads COUNT");
             assertFalse(result.contains("\"error\""), "Threads built-in should resolve: " + result);
             assertTrue(result.contains("\"count\""), "Should return count");
         }
@@ -556,12 +556,12 @@ class HeapSessionTest {
             session.execute("CALL THAT allBars");
 
             // Keep only bars retaining > 0 bytes (all should qualify)
-            String result = session.execute("FROM allBars RETAINING > 0 COUNT");
+            String result = session.execute("allBars RETAINING > 0 COUNT");
             assertFalse(result.contains("\"error\""), "RETAINING filter in pipeline should succeed: " + result);
             assertTrue(result.contains("\"count\""), "Should return count field");
 
             // Keep only bars retaining > Long.MAX_VALUE (none should qualify)
-            String empty = session.execute("FROM allBars RETAINING > 9999999999999 COUNT");
+            String empty = session.execute("allBars RETAINING > 9999999999999 COUNT");
             assertFalse(empty.contains("\"error\""), "RETAINING > huge should succeed: " + empty);
             long count = Long.parseLong(empty.replaceAll(".*\"count\":(\\d+).*", "$1").strip());
             assertEquals(0, count, "No objects should retain > 9999999999999 bytes");
@@ -705,9 +705,9 @@ class HeapSessionTest {
             int idEnd   = topResult.indexOf('"', idStart);
             int denseId = Integer.parseInt(topResult.substring(idStart, idEnd));
 
-            String subtree = session.execute("RETAINED BY i" + denseId);
+            String subtree = session.execute("ALL RETAINED BY i" + denseId);
             assertFalse(subtree.contains("\"error\""),
-                "RETAINED BY query should succeed: " + subtree);
+                "ALL RETAINED BY query should succeed: " + subtree);
             // The root itself should always appear
             assertTrue(subtree.contains("\"i" + denseId + "\""),
                 "Root object should appear in subtree");
@@ -931,15 +931,15 @@ class HeapSessionTest {
             int histId  = Integer.parseInt(hist.substring(idStart, idEnd));
 
             // s<n> should work wherever a named bitset is accepted
-            String fromSigil = session.execute("FROM s" + histId + " COUNT");
+            String fromSigil = session.execute("s" + histId + " COUNT");
             assertFalse(fromSigil.contains("\"error\""),
-                "FROM s<n> should succeed: " + fromSigil);
+                "s<n> as source should succeed: " + fromSigil);
             assertTrue(fromSigil.contains("\"count\""), "Should return count");
 
             // h<n> should also work
-            String fromH = session.execute("FROM h" + histId + " COUNT");
+            String fromH = session.execute("h" + histId + " COUNT");
             assertFalse(fromH.contains("\"error\""),
-                "FROM h<n> should succeed: " + fromH);
+                "h<n> as source should succeed: " + fromH);
             assertEquals(fromSigil, fromH, "s<n> and h<n> should resolve the same way");
 
             // EXPLAIN s<n> should work

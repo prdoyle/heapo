@@ -118,40 +118,40 @@ class QueryEngineTest {
     }
 
     @Test
-    void parserTopStandaloneExpandsToClassStar() {
-        var result = DslParser.parse("TOP 5 BY retainedSize");
+    void parserTopWithAllSource() {
+        var result = DslParser.parse("ALL TOP 5 BY retainedSize");
         assertInstanceOf(DslParser.Complete.class, result);
         var p = (DslParser.Pipeline) ((DslParser.Complete) result).action();
-        assertEquals("*", ((DslParser.ClassSource) p.source()).className());
+        assertEquals("All", ((DslParser.NameSource) p.source()).name());
         assertEquals(5, ((DslParser.TopNTerminal) p.terminal()).n());
     }
 
     @Test
-    void parserReferencedByStandaloneExpandsToClassStar() {
-        var result = DslParser.parse("REFERENCED BY GcRoots");
+    void parserReferencedByRequiresExplicitSource() {
+        var result = DslParser.parse("ALL REFERENCED BY GcRoots");
         assertInstanceOf(DslParser.Complete.class, result);
         var p = (DslParser.Pipeline) ((DslParser.Complete) result).action();
-        assertEquals("*", ((DslParser.ClassSource) p.source()).className());
+        assertEquals("All", ((DslParser.NameSource) p.source()).name());
         assertInstanceOf(DslParser.ReferencedByFilter.class, p.filters().get(0));
         assertEquals("GcRoots", ((DslParser.ReferencedByFilter) p.filters().get(0)).name());
     }
 
     @Test
-    void parserReferencingStandaloneExpandsToClassStar() {
-        var result = DslParser.parse("REFERENCING i42");
+    void parserReferencingRequiresExplicitSource() {
+        var result = DslParser.parse("ALL REFERENCING i42");
         assertInstanceOf(DslParser.Complete.class, result);
         var p = (DslParser.Pipeline) ((DslParser.Complete) result).action();
-        assertEquals("*", ((DslParser.ClassSource) p.source()).className());
+        assertEquals("All", ((DslParser.NameSource) p.source()).name());
         assertInstanceOf(DslParser.ReferencingFilter.class, p.filters().get(0));
         assertEquals("i42", ((DslParser.ReferencingFilter) p.filters().get(0)).name());
     }
 
     @Test
-    void parserReachableFromStandaloneExpandsToClassStar() {
-        var result = DslParser.parse("REACHABLE FROM GcRoots");
+    void parserReachableFromRequiresExplicitSource() {
+        var result = DslParser.parse("ALL REACHABLE FROM GcRoots");
         assertInstanceOf(DslParser.Complete.class, result);
         var p = (DslParser.Pipeline) ((DslParser.Complete) result).action();
-        assertEquals("*", ((DslParser.ClassSource) p.source()).className());
+        assertEquals("All", ((DslParser.NameSource) p.source()).name());
         assertInstanceOf(DslParser.ReachableFromFilter.class, p.filters().get(0));
     }
 

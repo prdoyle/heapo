@@ -121,13 +121,6 @@ public final class HeapSession implements AutoCloseable {
                 int histId = history.record(rawCmd, System.currentTimeMillis());
                 yield executePipeline(p, histId);
             }
-            case DslParser.DominatorSubtree ds -> {
-                int histId = history.record(rawCmd, System.currentTimeMillis());
-                BitSet bits = QueryEngine.dominatorSubtreeBitSet(heap, registry, ds.denseId());
-                that = new BitSetAnswer(bits, heap.objectCount());
-                thatHistId = histId;
-                yield displayBitSet(bits);
-            }
         };
     }
 
@@ -310,6 +303,12 @@ public final class HeapSession implements AutoCloseable {
             return bits;
         }
 
+        if (name.equalsIgnoreCase("THAT")) {
+            if (!(that instanceof BitSetAnswer bsa))
+                throw new IllegalArgumentException("THAT is not a bitset");
+            return (BitSet) bsa.bits().clone();
+        }
+
         BitSet builtin = QueryEngine.buildBuiltinBitSet(heap, registry, name);
         if (builtin != null) return builtin;
 
@@ -475,20 +474,14 @@ public final class HeapSession implements AutoCloseable {
         }
         return switch (p.terminal()) {
             case DslParser.TopNTerminal t -> {
-                var rows     = QueryEngine.topNFromBitSet(heap, registry, bits, t.n());
-                String table = tables.writeTopNResult(rows);
-                history.setSqlTable(histId, table);
-                that = new TableAnswer(table, rows.size());
+                that = new BitSetAnswer(bits, heap.objectCount());
                 thatHistId = histId;
-                yield JsonlFormatter.formatTopN(rows);
+                yield JsonlFormatter.formatTopN(QueryEngine.topNFromBitSet(heap, registry, bits, t.n()));
             }
             case DslParser.BottomNTerminal t -> {
-                var rows     = QueryEngine.bottomNFromBitSet(heap, registry, bits, t.n());
-                String table = tables.writeTopNResult(rows);
-                history.setSqlTable(histId, table);
-                that = new TableAnswer(table, rows.size());
+                that = new BitSetAnswer(bits, heap.objectCount());
                 thatHistId = histId;
-                yield JsonlFormatter.formatTopN(rows);
+                yield JsonlFormatter.formatTopN(QueryEngine.bottomNFromBitSet(heap, registry, bits, t.n()));
             }
             case DslParser.AggregateCountTerminal ignored -> {
                 long count = bits.cardinality();

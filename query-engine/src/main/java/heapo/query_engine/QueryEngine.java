@@ -706,6 +706,12 @@ public final class QueryEngine {
     public static BitSet buildBuiltinBitSet(UnpackedHeap heap, IndexRegistry registry,
                                              String name) throws IOException {
         return switch (name) {
+            case "All" -> {
+                int objectCount = heap.objectCount();
+                BitSet bits = new BitSet(objectCount);
+                bits.set(0, objectCount);
+                yield bits;
+            }
             case "GcRoots" -> {
                 int objectCount = heap.objectCount();
                 BitSet bits = new BitSet(objectCount);

@@ -21,16 +21,15 @@ All commands accept `-d <dir>` / `--heap-dir <dir>` to specify where indexes are
 
 | Sigil | Meaning |
 |---|---|
-| `i<n>` | Heap object instance (dense ID) — used in `EXPLAIN i1234`, `RETAINED BY i1234`, and all object output |
-| `t<n>` | Table result in history (e.g. prompt shows `heapo t17>`) |
+| `i<n>` | Heap object instance (dense ID) — used in `EXPLAIN i1234` and all object output |
 | `s<n>` | Set (bitset) result in history (e.g. prompt shows `heapo s42>`) |
 | `h<n>` | History entry reference — used in `CALL h42 name` |
 
-The REPL prompt shows the current result type and ID: `heapo s42>` means THAT is a bitset set saved as history entry 42.
+The REPL prompt shows the current result type and ID: `heapo s42>` means THAT is a bitset saved as history entry 42.
 
 ## Workflow
 
-**Prefer `heapo open` over `heapo query` for all multi-step analysis.** `heapo open` gives you a stateful session: `CALL THAT`, named results, `FROM THAT`, `FROM <name>`, and `IN <name>` all require a live session. Use `heapo query` only for truly one-shot lookups.
+**Prefer `heapo open` over `heapo query` for all multi-step analysis.** `heapo open` gives you a stateful session: `CALL THAT`, named results, `THAT` as a source, and `IN <name>` all require a live session. Use `heapo query` only for truly one-shot lookups.
 
 For agent/LLM use, pipe commands into `heapo open` via stdin with `--output jsonl`:
 
@@ -42,9 +41,9 @@ Or for a longer investigation:
 
 ```bash
 {
-  echo "TOP 20 BY retainedSize"
+  echo "ALL TOP 20 BY retainedSize"
   echo "CALL THAT bigLeakers"
-  echo "FROM bigLeakers RETAINED BY i1234 TOP 10 BY retainedSize"
+  echo "bigLeakers RETAINED BY i1234 TOP 10 BY retainedSize"
 } | heapo open --output jsonl DUMP
 ```
 
@@ -61,7 +60,7 @@ printf 'STATUS\nCLASSES\n' | heapo open --output jsonl DUMP
 ### 2. Find the biggest memory consumers
 
 ```bash
-printf 'TOP 20 BY retainedSize\n' | heapo open --output jsonl DUMP
+printf 'ALL TOP 20 BY retainedSize\n' | heapo open --output jsonl DUMP
 ```
 
 Identify the classes contributing the most retained memory, then drill in:
@@ -84,7 +83,7 @@ Each line is the immediate dominator — the object that, if collected, would fr
 ### 4. Explore a dominator subtree
 
 ```bash
-printf 'RETAINED BY i<id> TOP 20 BY retainedSize\n' | heapo open --output jsonl DUMP
+printf 'ALL RETAINED BY i<id> TOP 20 BY retainedSize\n' | heapo open --output jsonl DUMP
 ```
 
 Shows all objects exclusively retained by `i<id>`, sorted by retained size.
@@ -95,11 +94,11 @@ Shows all objects exclusively retained by `i<id>`, sorted by retained size.
 {
   echo "CLASS com.example.Cache TOP 10 BY retainedSize"
   echo "CALL THAT caches"
-  echo "FROM caches RETAINED BY i<id> TOP 10 BY retainedSize"
+  echo "ALL RETAINED BY i<id> IN caches TOP 10 BY retainedSize"
 } | heapo open --output jsonl DUMP
 ```
 
-`CALL THAT <name>` saves the current result under a name you choose. Use it in subsequent `FROM <name>`, `IN <name>`, or `RETAINED BY <name>` filters within the same session.
+`CALL THAT <name>` saves the current result under a name you choose. Use it in subsequent `IN <name>`, `RETAINED BY <name>`, or other filter arguments within the same session.
 
 ### 6. Filter by size threshold
 
@@ -111,17 +110,21 @@ printf 'CLASS java.lang.String RETAINING > 100000\n' | heapo open --output jsonl
 
 ### Pipeline model
 
-Queries compose as: **source** → zero or more **filters** → optional **terminal**.
+Queries compose as: **source** → zero or more **filters** → optional **display**.
+
+The result is always stored as a bitset in THAT. Display options control what is shown, not what is stored.
 
 **Sources** (produce a bitset of objects):
 
 | Source | Description |
 |---|---|
-| `CLASS <class>` | All instances of a class (use `*` for all objects) |
-| `FROM <name>` | Named bitset result or built-in name |
-| `FROM THAT` | Current result |
+| `ALL` | All objects |
+| `CLASS <class>` | All instances of a class (`*` and `?` wildcards supported) |
+| `THAT` | Current result |
+| `i<n>` | Singleton: just object `i<n>` |
+| `<name>` | Named result (from `CALL THAT`) or built-in name |
 
-**Built-in names** (use directly in `FROM`, `IN`, `RETAINED BY` without `CALL THAT`):
+**Built-in names** (usable as sources or in filter arguments without `CALL THAT`):
 
 | Name | Contents |
 |---|---|
@@ -132,42 +135,50 @@ Queries compose as: **source** → zero or more **filters** → optional **termi
 | `WeakReferences` | All `java.lang.ref.WeakReference` instances |
 | `PhantomReferences` | All `java.lang.ref.PhantomReference` instances |
 
-**Filters** (narrow the bitset, O(v/64) bitset operations):
+A source is itself composable — filters chain to form a new source:
+```
+ALL RETAINED BY i123 REFERENCING i456 TOP 10
+```
+
+**Filters** (narrow the bitset):
 
 | Filter | Description |
 |---|---|
-| `IN <name>` | Bitset AND — keep objects present in the named set |
-| `NOT IN <name>` | Bitset AND-NOT — exclude objects present in the named set |
-| `RETAINED BY <name>` | Keep objects dominated (exclusively retained) by any object in the named set |
+| `IN <source>` | Bitset AND — keep objects present in source |
+| `NOT IN <source>` | Bitset AND-NOT — exclude objects present in source |
+| `RETAINED BY <source>` | Keep objects dominated (exclusively retained) by any object in source |
 | `RETAINING > <bytes>` | Keep objects whose retained size satisfies the comparison (`>` `>=` `<` `<=` `=`) |
 | `OF TYPE <class>` | Keep objects whose runtime type is `class` or any subclass |
 | `OF TYPE EXACTLY <class>` | Keep objects whose runtime type is exactly `class` (no subclasses) |
 | `SIZED > <bytes>` | Keep objects whose shallow (own field) size satisfies the comparison |
-| `REFERENCING <name>` | Keep objects that have a direct outgoing reference to any object in the named set |
-| `REFERENCED BY <name>` | Keep objects directly referenced (pointed to) by any object in the named set |
-| `REACHABLE FROM <name>` | Keep objects transitively reachable (by following forward refs) from any object in the named set |
+| `REFERENCING <source>` | Keep objects that have a direct outgoing reference to any object in source |
+| `REFERENCED BY <source>` | Keep objects directly referenced (pointed to) by any object in source |
+| `REACHABLE FROM <source>` | Keep objects transitively reachable (by following forward refs) from any object in source |
 | `WHERE <field> <op> <value>` | Keep objects whose primitive field satisfies the comparison (`>` `>=` `<` `<=` `=`). Class context required (use `CLASS <class>` or add `OF TYPE <class>` before WHERE). Value is a number or `true`/`false`. |
 
-**Terminals** (materialise the bitset into a table result):
+**Display options** (control what is shown; result is always a bitset in THAT):
 
-| Terminal | Returns |
+| Display | Shows |
 |---|---|
 | `TOP <n> [BY retainedSize]` | Largest-N by retained size |
 | `BOTTOM <n> [BY retainedSize]` | Smallest-N by retained size |
 | `COUNT` | Total count |
 | `MAX retainedSize` | Maximum retained size |
 | `SUM retainedSize` | Sum of retained sizes |
-
-With no terminal, the result is stored as a bitset (THAT) and the top 10 are displayed.
+| _(none)_ | Top 10 by retained size |
 
 **Examples:**
 
 ```
-CLASS com.example.Foo                          # all Foo instances (bitset)
-CLASS com.example.Foo TOP 10 BY retainedSize   # top 10 Foos
-CLASS * IN suspects NOT IN excluded TOP 20 BY retainedSize
-FROM mySet COUNT
-FROM THAT TOP 5 BY retainedSize
+CLASS com.example.Foo                              # all Foo instances
+CLASS com.example.Foo TOP 10 BY retainedSize       # top 10 Foos
+ALL TOP 20 BY retainedSize                         # top 20 across all classes
+ALL RETAINED BY i1234 TOP 10                       # dominator subtree of i1234
+Threads REFERENCING i456                           # threads that hold i456
+ALL IN suspects NOT IN excluded TOP 20             # set difference
+mySet COUNT                                        # count objects in named set
+THAT TOP 5 BY retainedSize                         # re-display current result
+i1234 TOP 1                                        # inspect one object
 ```
 
 ### Other queries
@@ -178,11 +189,7 @@ FROM THAT TOP 5 BY retainedSize
 | `CLASSES [MATCHING <glob>]` | All classes sorted by instance count; glob matches dotted class name |
 | `NAMES [MATCHING <glob>]` | All named bitset results; glob filters by name |
 | `EXPLAIN <name>` | Show which history command produced the named result (provenance) |
-| `TOP <n> [BY retainedSize]` | Largest-N objects across all classes |
-| `BOTTOM <n> [BY retainedSize]` | Smallest-N objects across all classes |
-| `CLASS <class> RETAINING > <bytes>` | Instances satisfying the comparison (`>` `>=` `<` `<=` `=`) |
 | `EXPLAIN i<id>` | Dominator chain from object to GC root |
-| `RETAINED BY i<id> [TOP <n>]` | All objects in the dominator subtree |
 
 ## Output formats
 
@@ -218,12 +225,12 @@ The optional `field` names the field in this object that directly references the
 
 **COUNT:**
 ```json
-{"className":"java.lang.String","count":182340}
+{"count":182340}
 ```
 
 **MAX / SUM:**
 ```json
-{"className":"java.lang.String","func":"SUM","retainedSize":41943040}
+{"className":"(pipeline)","func":"SUM","retainedSize":41943040}
 ```
 
 ## Analysis guidelines

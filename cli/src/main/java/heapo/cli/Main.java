@@ -50,61 +50,52 @@ public final class Main implements Runnable {
     // ── Shared helpers ────────────────────────────────────────────────────────
 
     static final String REPL_HELP = """
-        Sigils: i<n> = heap object instance, t<n> = table result, s<n> = set (bitset), h<n> = history entry.
-        The prompt shows the current result type and ID, e.g. heapo s42> or heapo t17>.
+        Sigils: i<n> = heap object instance, s<n> = set (bitset) result, h<n> = history entry.
+        The prompt shows the current result type and ID, e.g. heapo s42>.
 
-        DSL sources (produce a bitset):
-          CLASS <class>                           all instances of a class (implicit top 10 display)
-          FROM <bitset>                           named bitset result
-          FROM THAT                               current result
-          Use * as class name for all objects; * and ? wildcards are supported in class names.
+        Grammar:  <source> [<filter>...] [<display>]
+        A source is itself filterable: ALL RETAINED BY i123 REFERENCING i456 TOP 10
 
-        Built-in bitset names (usable anywhere a <bitset> is accepted):
-          GcRoots         all GC root objects
-          Threads         all java.lang.Thread instances
-          ClassLoaders    all java.lang.ClassLoader instances
-          SoftReferences / WeakReferences / PhantomReferences
+        Sources (produce a bitset):
+          ALL                                     all objects
+          CLASS <class>                           instances of a class (wildcards * and ? supported)
+          THAT                                    current result (as a source)
+          i<n>                                    singleton: just object i<n>
+          <name>                                  named result or built-in name
+          GcRoots / Threads / ClassLoaders / SoftReferences / WeakReferences / PhantomReferences
 
-        Bitset filters (chain after a source):
-          IN <bitset>                             bitset AND — keep objects in both sets
-          NOT IN <bitset>                         bitset AND-NOT — exclude objects in set
-          RETAINED BY <bitset>                    keep objects dominated by any object in set
+        Filters (chain after any source):
+          IN <source>                             bitset AND — keep objects in both sets
+          NOT IN <source>                         bitset AND-NOT — exclude objects in source
+          RETAINED BY <source>                    keep objects dominated by any object in source
           RETAINING > <bytes>                     keep objects whose retained size satisfies comparison (>, >=, <, <=, =)
           OF TYPE <class>                         keep objects of class or any subclass
           OF TYPE EXACTLY <class>                 keep objects of exactly that class
           SIZED > <bytes>                         keep objects whose shallow size satisfies comparison (>, >=, <, <=, =)
-          REFERENCING <bitset>                    keep objects that directly reference any object in set
-          REFERENCED BY <bitset>                  keep objects directly referenced by any object in set
-          REACHABLE FROM <bitset>                 keep objects transitively reachable from any object in set
+          REFERENCING <source>                    keep objects that directly reference any object in source
+          REFERENCED BY <source>                  keep objects directly referenced by any object in source
+          REACHABLE FROM <source>                 keep objects transitively reachable from any object in source
           WHERE <field> <op> <value>              keep objects whose primitive field satisfies comparison (>, >=, <, <=, =)
 
-        Output terminals (materialise the bitset into a table):
-          TOP <n> [BY retainedSize]               largest-N objects
-          BOTTOM <n> [BY retainedSize]            smallest-N objects
+        Display options (result is always stored as a bitset in THAT):
+          TOP <n> [BY retainedSize]               show largest-N objects
+          BOTTOM <n> [BY retainedSize]            show smallest-N objects
           COUNT                                   total count
           MAX retainedSize                        max retained size
           SUM retainedSize                        total retained size
-
-        Combined shorthand (source + terminal in one line):
-          CLASS <class> TOP <n> [BY retainedSize]
-          CLASS <class> BOTTOM <n> [BY retainedSize]
-          CLASS <class> RETAINING > <bytes>       filter by retained size (>, >=, <, <=, =)
-          CLASS <class> COUNT|SUM retainedSize|MAX retainedSize
-          TOP <n> [BY retainedSize]               across all classes
-          BOTTOM <n> [BY retainedSize]            across all classes
+          (no display)                            show top 10 by retained size
 
         Other queries:
           STATUS                                  object and class counts
           CLASSES [MATCHING <glob>]               all classes sorted by instance count
           EXPLAIN i<id>                           dominator chain to GC root
-          RETAINED BY i<id> [TOP <n>]             objects retained by i<id>
 
         Session commands:
           NAMES [MATCHING <glob>]  show named bitsets (optionally filtered)
-          EXPLAIN <bitset>         show what command produced the named result
+          EXPLAIN <name>           show what command produced the named result
           CALL THAT <name>         name the last result (persists a bitset to disk)
           CALL h<id> <name>        name a specific history entry
-          FORGET <bitset>          remove a name
+          FORGET <name>            remove a name
           UNDO                     reverse the last CALL or FORGET
           HISTORY [<n>]            show recent commands (default 10)
 
@@ -211,7 +202,7 @@ public final class Main implements Runnable {
         Path hprofFile;
 
         @Parameters(index = "1..*", arity = "1..*",
-                    description = "Query tokens (e.g. CLASS * TOP 20 BY retainedSize)")
+                    description = "Query tokens (e.g. ALL TOP 20 BY retainedSize)")
         List<String> queryTokens;
 
         @Option(names = {"-d", "--heap-dir"},
@@ -281,10 +272,6 @@ public final class Main implements Runnable {
 
                 case DslParser.ExplainQuery eq ->
                     JsonlFormatter.formatExplain(QueryEngine.explain(heap, reg, eq.denseId()));
-
-                case DslParser.DominatorSubtree ds ->
-                    JsonlFormatter.formatTopN(
-                        QueryEngine.dominatorSubtree(heap, reg, ds.denseId(), 10));
 
                 case DslParser.Pipeline p -> executePipelineQuery(p, heap, reg, sessionDb);
 
@@ -426,6 +413,11 @@ public final class Main implements Runnable {
         private static BitSet resolveNameOrError(String name, UnpackedHeap heap,
                                                    IndexRegistry reg,
                                                    SessionDb sessionDb) throws IOException, SQLException {
+            if (name.equalsIgnoreCase("THAT")) {
+                System.err.println("Error: THAT requires a session — use 'heapo open'");
+                return null;
+            }
+
             BitSet bits = QueryEngine.buildBuiltinBitSet(heap, reg, name);
             if (bits != null) return bits;
 

@@ -75,7 +75,6 @@ public final class DslParser {
     public record StatusQuery()                              implements Query {}
     public record ClassesQuery(String glob)                  implements Query {}  // null = all
     public record ExplainQuery(int denseId)                  implements Query {}
-    public record DominatorSubtree(int denseId)               implements Query {}
 
     // Session commands
     public record NamesQuery(String glob)                    implements Query {}  // null = all
@@ -93,9 +92,10 @@ public final class DslParser {
     private static final Set<String> OPS = Set.of(">", ">=", "<", "<=", "=");
 
     private static final List<String> TOP_LEVEL = List.of(
-        "CLASS", "FROM", "TOP", "BOTTOM", "CLASSES", "EXPLAIN", "RETAINED", "STATUS",
-        "NAMES", "THAT", "UNDO", "HISTORY", "CALL", "FORGET",
-        "REFERENCING", "REFERENCED", "REACHABLE"
+        "ALL", "CLASS", "THAT",
+        "GcRoots", "Threads", "ClassLoaders", "SoftReferences", "WeakReferences", "PhantomReferences",
+        "STATUS", "CLASSES", "NAMES", "EXPLAIN",
+        "HISTORY", "CALL", "FORGET", "UNDO"
     );
 
     private static final List<String> FILTER_KEYWORDS = List.of(
@@ -129,28 +129,29 @@ public final class DslParser {
 
     private static ParseResult parseTop(String[] t) {
         return switch (t[0].toUpperCase()) {
-            case "STATUS"   -> exactly1(t, new StatusQuery());
-            case "THAT"     -> exactly1(t, new ThatQuery());
-            case "UNDO"     -> exactly1(t, new UndoQuery());
-            case "CLASS"    -> parseClassPipeline(t, 1);
-            case "FROM"     -> parseFromPipeline(t, 1);
-            case "TOP"      -> parseTopBottom("TOP",    t, 1);
-            case "BOTTOM"   -> parseTopBottom("BOTTOM", t, 1);
-            case "CLASSES"  -> parseClasses(t, 1);
-            case "NAMES"    -> parseNames(t, 1);
-            case "EXPLAIN"  -> parseExplain(t, 1);
-            case "RETAINED"   -> parseRetainedBy(t, 1);
-            case "REFERENCED", "REFERENCING", "REACHABLE" ->
-                parsePipeline(new ClassSource("*"), t, 0);
-            case "HISTORY"  -> parseHistory(t, 1);
-            case "CALL"     -> parseCall(t, 1);
-            case "FORGET"   -> parseForget(t, 1);
+            case "STATUS"  -> exactly1(t, new StatusQuery());
+            case "UNDO"    -> exactly1(t, new UndoQuery());
+            case "CLASS"   -> parseClassPipeline(t, 1);
+            case "ALL"     -> parsePipeline(new NameSource("All"), t, 1);
+            case "THAT"    -> t.length == 1
+                ? complete(new ThatQuery(), FILTER_OR_TERMINAL)
+                : parsePipeline(new ThatSource(), t, 1);
+            case "CLASSES" -> parseClasses(t, 1);
+            case "NAMES"   -> parseNames(t, 1);
+            case "EXPLAIN" -> parseExplain(t, 1);
+            case "HISTORY" -> parseHistory(t, 1);
+            case "CALL"    -> parseCall(t, 1);
+            case "FORGET"  -> parseForget(t, 1);
             default -> {
                 if (isHistRef(t[0])) {
-                    if (t.length > 1) yield invalid("Unexpected tokens after " + t[0]);
-                    yield complete(new HistoryRecallQuery(Integer.parseInt(t[0].substring(1))), List.of());
+                    // h<n> alone recalls history; h<n> with filters/display is a pipeline source.
+                    if (t.length == 1)
+                        yield complete(new HistoryRecallQuery(Integer.parseInt(t[0].substring(1))), List.of());
+                    yield parsePipeline(new NameSource(t[0]), t, 1);
                 }
-                yield invalid("Unrecognised command: " + t[0]);
+                // Built-in names (Threads, GcRoots, …), i<n> singletons, s<n>/t<n> sigils,
+                // and user-named results are all resolved at execution time via NameSource.
+                yield parsePipeline(new NameSource(t[0]), t, 1);
             }
         };
     }
@@ -160,25 +161,6 @@ public final class DslParser {
     private static ParseResult parseClassPipeline(String[] t, int i) {
         if (i >= t.length) return incomplete(List.of(COMPLETE_CLASS, "*"));
         return parsePipeline(new ClassSource(t[i]), t, i + 1);
-    }
-
-    // ── FROM pipeline source ──────────────────────────────────────────────────
-
-    private static ParseResult parseFromPipeline(String[] t, int i) {
-        if (i >= t.length) {
-            var opts = new ArrayList<>(List.of("THAT"));
-            opts.add(COMPLETE_BITSET);
-            return incomplete(opts);
-        }
-        Source src = eq(t[i], "THAT") ? new ThatSource() : new NameSource(t[i]);
-        return parsePipeline(src, t, i + 1);
-    }
-
-    // ── TOP / BOTTOM as standalone (implicit CLASS *) ─────────────────────────
-
-    private static ParseResult parseTopBottom(String kw, String[] t, int i) {
-        if (i >= t.length) return incomplete(List.of("<n>"));
-        return parseTerminalSuffix(kw, new ClassSource("*"), List.of(), t, i);
     }
 
     // ── Pipeline ──────────────────────────────────────────────────────────────
@@ -358,18 +340,6 @@ public final class DslParser {
         }
         if (i + 1 < t.length) return invalid("Unexpected tokens after EXPLAIN " + arg);
         return complete(new ExplainNameQuery(arg), List.of());
-    }
-
-    private static ParseResult parseRetainedBy(String[] t, int i) {
-        if (i >= t.length) return incomplete(List.of("BY"));
-        if (!eq(t[i], "BY")) return invalid("Expected BY after RETAINED, got: " + t[i]);
-        i++;
-        if (i >= t.length) return incomplete(List.of("i<n>"));
-        if (!isObjRef(t[i])) return invalid("Expected i<n> after RETAINED BY, got: " + t[i]);
-        int denseId = Integer.parseInt(t[i].substring(1));
-        i++;
-        if (i < t.length) return invalid("Unexpected tokens after RETAINED BY i<n>: " + t[i]);
-        return complete(new DominatorSubtree(denseId), List.of());
     }
 
     // ── Session commands ──────────────────────────────────────────────────────
