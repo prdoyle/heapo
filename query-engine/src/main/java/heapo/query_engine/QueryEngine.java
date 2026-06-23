@@ -719,14 +719,18 @@ public final class QueryEngine {
     }
 
     private static boolean containsGlob(String s) {
-        return s.indexOf('*') >= 0 || s.indexOf('?') >= 0;
+        return s.indexOf('*') >= 0;
     }
 
     private static boolean matchGlob(String s, String pattern) {
-        return s.matches(pattern
-            .replace(".", "\\.")
-            .replace("$", "\\$")
-            .replace("*", ".*")
-            .replace("?", "."));
+        String[] chunks = pattern.split("\\*", -1);
+        int pos = 0;
+        for (int i = 0; i < chunks.length; i++) {
+            int idx = s.indexOf(chunks[i], pos);
+            if (idx < 0) return false;
+            if (i == 0 && !chunks[0].isEmpty() && idx != 0) return false; // prefix
+            pos = idx + chunks[i].length();
+        }
+        return chunks[chunks.length - 1].isEmpty() || pos == s.length(); // suffix
     }
 }
