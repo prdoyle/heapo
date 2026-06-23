@@ -368,7 +368,7 @@ public final class DslParser {
         if (!isObjRef(t[i])) return invalid("Expected i<n> after RETAINED BY, got: " + t[i]);
         int denseId = Integer.parseInt(t[i].substring(1));
         i++;
-        if (i >= t.length) return complete(new DominatorSubtree(denseId, -1), List.of("TOP"));
+        if (i >= t.length) return complete(new DominatorSubtree(denseId, 10), List.of("TOP"));
         if (!eq(t[i], "TOP")) return invalid("Expected TOP or end of input after RETAINED BY " + t[i-1] + ", got: " + t[i]);
         i++;
         if (i >= t.length) return incomplete(List.of("<n>"));
