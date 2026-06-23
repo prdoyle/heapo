@@ -145,6 +145,7 @@ public final class Main implements Runnable {
                     .terminal(terminal)
                     .history(new DefaultHistory())
                     .completer(new DslCompleter(heap, session.names()))
+                    .variable(LineReader.HISTORY_FILE, outDir.resolve("repl-history"))
                     .build();
 
                 while (true) {
