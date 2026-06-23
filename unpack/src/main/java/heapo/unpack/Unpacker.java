@@ -31,14 +31,16 @@ public final class Unpacker {
         Files.createDirectories(bitsetDir);
         Files.createDirectories(tempDir);
 
-        Path scratchIdMap      = tempDir.resolve("id-map.bin");
-        Path scratchEdges      = tempDir.resolve("edges.bin");
-        Path scratchClassOfRaw = tempDir.resolve("class-of-raw.bin");
+        Path scratchIdMap       = tempDir.resolve("id-map.bin");
+        Path scratchEdges       = tempDir.resolve("edges.bin");
+        Path scratchClassOfRaw  = tempDir.resolve("class-of-raw.bin");
+        Path primArrayScratch   = tempDir.resolve("prim-array-scratch.bin");
         Path fieldValuesTempDir = tempDir.resolve("fields-tmp");
         Files.createDirectories(fieldValuesTempDir);
 
         var handler = new ScanHandler(scratchIdMap, scratchEdges, scratchClassOfRaw,
-                                      indexDir.resolve("shallow-size.bin"), fieldValuesTempDir);
+                                      indexDir.resolve("shallow-size.bin"), fieldValuesTempDir,
+                                      primArrayScratch);
         new HprofReader(hprofFile).read(handler);
         handler.closeStreams();
 
@@ -62,6 +64,8 @@ public final class Unpacker {
         Files.createDirectories(fieldsDir);
         finaliseFieldValues(handler, fieldValuesTempDir, fieldsDir);
         writeFieldSchemas(handler, fieldsDir);
+
+        buildPrimArrayIndex(primArrayScratch, indexDir, objectCount);
 
         deleteIfExists(scratchIdMap, scratchEdges, scratchClassOfRaw);
         try { Files.delete(fieldValuesTempDir); } catch (IOException ignored) {}
@@ -98,6 +102,7 @@ public final class Unpacker {
         private final DataOutputStream edgesOut;
         private final DataOutputStream classOfRawOut;
         private final DataOutputStream shallowSizeOut;
+        private final DataOutputStream primArrayScratchOut;
 
         // Per-class primitive field value streams: keyed by class dense ID.
         // Written to fieldValuesTempDir; finalised post-scan.
@@ -105,11 +110,13 @@ public final class Unpacker {
         final Map<Integer, DataOutputStream> fieldValueStreams = new LinkedHashMap<>();
 
         ScanHandler(Path scratchIdMap, Path scratchEdges, Path scratchClassOfRaw,
-                    Path shallowSizePath, Path fieldValuesTempDir) throws IOException {
-            idMapOut           = dataOut(scratchIdMap);
-            edgesOut           = dataOut(scratchEdges);
-            classOfRawOut      = dataOut(scratchClassOfRaw);
-            shallowSizeOut     = dataOut(shallowSizePath);
+                    Path shallowSizePath, Path fieldValuesTempDir,
+                    Path primArrayScratch) throws IOException {
+            idMapOut              = dataOut(scratchIdMap);
+            edgesOut              = dataOut(scratchEdges);
+            classOfRawOut         = dataOut(scratchClassOfRaw);
+            shallowSizeOut        = dataOut(shallowSizePath);
+            primArrayScratchOut   = dataOut(primArrayScratch);
             this.fieldValuesTempDir = fieldValuesTempDir;
         }
 
@@ -118,6 +125,7 @@ public final class Unpacker {
             edgesOut.close();
             classOfRawOut.close();
             shallowSizeOut.close();
+            primArrayScratchOut.close();
             for (DataOutputStream out : fieldValueStreams.values()) out.close();
         }
 
@@ -196,6 +204,9 @@ public final class Unpacker {
             emitIdMap(objectId, denseId);
             classOfRawOut.writeLong(0L);
             shallowSizeOut.writeInt(shallowShift(size));
+            primArrayScratchOut.writeInt(denseId);
+            primArrayScratchOut.writeInt(data.length);
+            primArrayScratchOut.write(data);
         }
 
         // ── GC root collectors ─────────────────────────────────────────────────
@@ -447,9 +458,9 @@ public final class Unpacker {
         Map<Integer, Long> denseToRaw = new HashMap<>();
         for (var e : handler.classDenseIds.entrySet()) denseToRaw.put(e.getValue(), e.getKey());
 
-        for (int classDenseId : handler.fieldValueStreams.keySet()) {
-            Long rawId = denseToRaw.get(classDenseId);
-            if (rawId == null) continue;
+        for (var entry : denseToRaw.entrySet()) {
+            int classDenseId = entry.getKey();
+            Long rawId = entry.getValue();
 
             List<String> lines = new ArrayList<>();
             long curClass = rawId;
@@ -459,7 +470,6 @@ public final class Unpacker {
                 if (ftypes == null) break;
                 for (int i = 0; i < ftypes.length; i++) {
                     int type = ftypes[i] & 0xFF;
-                    if (type == HprofReader.TYPE_OBJECT) continue;
                     String name = (fnameIds != null && i < fnameIds.length)
                         ? handler.strings.getOrDefault(fnameIds[i], "field_" + i)
                         : "field_" + i;
@@ -474,6 +484,50 @@ public final class Unpacker {
                     String.join("\n", lines) + "\n");
             }
         }
+    }
+
+    // ── Post-scan: prim-array data index ─────────────────────────────────────
+
+    /**
+     * Builds two index files from the prim-array scratch:
+     * <ul>
+     *   <li>{@code indexes/prim-array-offsets.bin}: one long per dense ID; value = byte offset in
+     *       data file where {@code [int length][byte[] data]} starts, or {@code -1} if not a prim array.</li>
+     *   <li>{@code indexes/prim-array-data.bin}: packed records {@code [int length][byte[] data]}
+     *       for all primitive arrays, in dense-ID order.</li>
+     * </ul>
+     */
+    private static void buildPrimArrayIndex(Path scratchPath, Path indexDir, int objectCount)
+            throws IOException {
+        long[] offsets = new long[objectCount];
+        Arrays.fill(offsets, -1L);
+
+        Path dataPath = indexDir.resolve("prim-array-data.bin");
+        long dataOffset = 0;
+
+        try (var in  = dataIn(scratchPath);
+             var out = dataOut(dataPath)) {
+            while (true) {
+                try {
+                    int    denseId = in.readInt();
+                    int    length  = in.readInt();
+                    byte[] bytes   = in.readNBytes(length);
+                    offsets[denseId] = dataOffset;
+                    out.writeInt(length);
+                    out.write(bytes);
+                    // Pad to 4-byte alignment so readIntAt() works for subsequent records.
+                    int pad = (4 - (length & 3)) & 3;
+                    for (int i = 0; i < pad; i++) out.writeByte(0);
+                    dataOffset += 4L + length + pad;
+                } catch (EOFException e) { break; }
+            }
+        }
+
+        try (var out = dataOut(indexDir.resolve("prim-array-offsets.bin"))) {
+            for (long off : offsets) out.writeLong(off);
+        }
+
+        Files.delete(scratchPath);
     }
 
     // ── Manifest ─────────────────────────────────────────────────────────────

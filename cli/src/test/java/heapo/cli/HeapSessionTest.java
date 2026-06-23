@@ -913,4 +913,77 @@ class HeapSessionTest {
                 "Object should appear in its own retained set");
         }
     }
+
+    // ── Session sigils as bitset references ──────────────────────────────────
+
+    @Test
+    void sessionSigilUsableAsBitsetReference() throws Exception {
+        Path p = tempRoot.resolve("sigil-ref.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            // Produce a bitset result — prompt would show e.g. "heapo s3>"
+            session.execute("CLASS heapo.samples.KnownObjects$Bar");
+
+            // Find the history ID of that result
+            String hist = session.execute("HISTORY 1");
+            int marker  = hist.indexOf("\"id\":\"h");
+            int idStart = marker + "\"id\":\"h".length();
+            int idEnd   = hist.indexOf('"', idStart);
+            int histId  = Integer.parseInt(hist.substring(idStart, idEnd));
+
+            // s<n> should work wherever a named bitset is accepted
+            String fromSigil = session.execute("FROM s" + histId + " COUNT");
+            assertFalse(fromSigil.contains("\"error\""),
+                "FROM s<n> should succeed: " + fromSigil);
+            assertTrue(fromSigil.contains("\"count\""), "Should return count");
+
+            // h<n> should also work
+            String fromH = session.execute("FROM h" + histId + " COUNT");
+            assertFalse(fromH.contains("\"error\""),
+                "FROM h<n> should succeed: " + fromH);
+            assertEquals(fromSigil, fromH, "s<n> and h<n> should resolve the same way");
+
+            // EXPLAIN s<n> should work
+            String explain = session.execute("EXPLAIN s" + histId);
+            assertFalse(explain.contains("\"error\""),
+                "EXPLAIN s<n> should succeed: " + explain);
+            assertTrue(explain.contains("\"command\""), "Should show the command");
+        }
+    }
+
+    // ── Description field in output ───────────────────────────────────────────
+
+    @Test
+    void stringObjectsHaveDescriptionField() throws Exception {
+        Path p = tempRoot.resolve("desc-string.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            String result = session.execute("CLASS java.lang.String TOP 5");
+            assertFalse(result.contains("\"error\""),
+                "CLASS java.lang.String should succeed: " + result);
+            // Every String row should have a description field
+            for (String line : result.lines().filter(l -> !l.isBlank()).toList()) {
+                assertTrue(line.contains("\"description\""),
+                    "String rows must have description field: " + line);
+            }
+        }
+    }
+
+    @Test
+    void classObjectsHaveDescriptionWithClassName() throws Exception {
+        Path p = tempRoot.resolve("desc-class.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            String result = session.execute("CLASS java.lang.Class TOP 5");
+            assertFalse(result.contains("\"error\""),
+                "CLASS java.lang.Class should succeed: " + result);
+            // Every Class row should have a description containing a dotted class name
+            for (String line : result.lines().filter(l -> !l.isBlank()).toList()) {
+                assertTrue(line.contains("\"description\""),
+                    "Class rows must have description field: " + line);
+                // Description should look like a class name (contains at least one dot or common package)
+                int descStart = line.indexOf("\"description\":\"") + "\"description\":\"".length();
+                int descEnd   = line.indexOf('"', descStart);
+                String desc = line.substring(descStart, descEnd);
+                assertFalse(desc.isEmpty(), "Class description should not be empty: " + line);
+            }
+        }
+    }
 }

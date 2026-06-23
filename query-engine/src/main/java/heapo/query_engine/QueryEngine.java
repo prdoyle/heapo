@@ -1,5 +1,6 @@
 package heapo.query_engine;
 
+import heapo.indexes.CsrReader;
 import heapo.indexes.IndexFile;
 import heapo.indexes.IndexRegistry;
 import heapo.model.*;
@@ -7,6 +8,7 @@ import heapo.unpack.HprofReader;
 import heapo.unpack.UnpackedHeap;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.BitSet;
 
@@ -66,10 +68,10 @@ public final class QueryEngine {
                 int v        = sorted.get(i)[0];
                 int classDid = classOf.readInt(v);
                 rows.add(new TopNRow(i + 1, v, names.nameOf(classDid),
-                    retained.readLong(v), (long) shallowSize.readInt(v) * 8L));
+                    retained.readLong(v), (long) shallowSize.readInt(v) * 8L, null));
             }
         }
-        return rows;
+        return withDescriptions(rows, names, registry);
     }
 
     /** Count of direct instances of the given class (or total objects if {@code "*"}). */
@@ -118,12 +120,14 @@ public final class QueryEngine {
      */
     public static List<ExplainNode> explain(UnpackedHeap heap, IndexRegistry registry,
                                              int denseId) throws IOException {
-        var names = ClassNameIndex.load(heap);
-        var path  = new ArrayList<ExplainNode>();
+        var names     = ClassNameIndex.load(heap);
+        var path      = new ArrayList<ExplainNode>();
+        var classDids = new ArrayList<Integer>();
 
         try (var idom     = registry.openIdom();
              var retained = registry.openRetainedSize();
-             var classOf  = registry.openClassOf()) {
+             var classOf  = registry.openClassOf();
+             var fwd      = registry.openForwardRefs()) {
 
             int cur   = denseId;
             int depth = 0;
@@ -137,10 +141,53 @@ public final class QueryEngine {
                 }
                 long retainedSize = retained.readLong(cur);
                 path.add(new ExplainNode(cur, className, retainedSize, depth++, notes));
+                classDids.add(classDid);
                 cur = idom.readInt(cur); // -1 = root of dominator tree
+            }
+
+            // Annotate each node with the field in its parent that directly references it.
+            // path[i] is the child, path[i+1] is the parent (dominator).
+            for (int i = 0; i < path.size() - 1; i++) {
+                int    childId       = path.get(i).denseId();
+                int    parentId      = path.get(i + 1).denseId();
+                String parentClass   = path.get(i + 1).className();
+                int    parentClassDid = classDids.get(i + 1);
+
+                long start  = fwd.start(parentId);
+                long end    = fwd.end(parentId);
+                int  relPos = -1;
+                for (long pos = start; pos < end; pos++) {
+                    if (fwd.edge(pos) == childId) { relPos = (int)(pos - start); break; }
+                }
+
+                String via;
+                if (relPos < 0) {
+                    via = "(indirect)";
+                } else if (parentClass.startsWith("[")) {
+                    via = "[" + relPos + "]";
+                } else {
+                    via = objectFieldName(parentClassDid, relPos, registry);
+                }
+
+                ExplainNode node = path.get(i);
+                path.set(i, new ExplainNode(node.denseId(), node.className(),
+                                             node.retainedSize(), node.depth(), node.notes(), via));
             }
         }
         return path;
+    }
+
+    private static String objectFieldName(int classDenseId, int refPos, IndexRegistry registry)
+            throws IOException {
+        var schema = registry.loadFieldSchema(classDenseId);
+        int count  = 0;
+        for (var field : schema) {
+            if (field.typeCode() == HprofReader.TYPE_OBJECT) {
+                if (count == refPos) return field.name();
+                count++;
+            }
+        }
+        return "(indirect)";
     }
 
     /**
@@ -188,10 +235,10 @@ public final class QueryEngine {
                 int v        = sorted.get(i)[0];
                 int classDid = classOf.readInt(v);
                 rows.add(new TopNRow(i + 1, v, names.nameOf(classDid),
-                    retained.readLong(v), (long) shallowSize.readInt(v) * 8L));
+                    retained.readLong(v), (long) shallowSize.readInt(v) * 8L, null));
             }
         }
-        return rows;
+        return withDescriptions(rows, names, registry);
     }
 
     /**
@@ -240,10 +287,10 @@ public final class QueryEngine {
                 long rs      = matchingLong.get(i)[1];
                 int classDid = classOf.readInt(v);
                 rows.add(new TopNRow(i + 1, v, names.nameOf(classDid),
-                    rs, (long) shallowSize.readInt(v) * 8L));
+                    rs, (long) shallowSize.readInt(v) * 8L, null));
             }
         }
-        return rows;
+        return withDescriptions(rows, names, registry);
     }
 
     private static boolean matches(long value, String op, long threshold) {
@@ -344,10 +391,10 @@ public final class QueryEngine {
                 long rs      = pairs.get(i)[1];
                 int classDid = classOf.readInt(v);
                 rows.add(new TopNRow(i + 1, v, names.nameOf(classDid),
-                    rs, (long) shallowSize.readInt(v) * 8L));
+                    rs, (long) shallowSize.readInt(v) * 8L, null));
             }
         }
-        return rows;
+        return withDescriptions(rows, names, registry);
     }
 
     /**
@@ -662,10 +709,10 @@ public final class QueryEngine {
                 int v        = sorted.get(i)[0];
                 int classDid = classOf.readInt(v);
                 rows.add(new TopNRow(i + 1, v, names.nameOf(classDid),
-                    retained.readLong(v), (long) shallowSize.readInt(v) * 8L));
+                    retained.readLong(v), (long) shallowSize.readInt(v) * 8L, null));
             }
         }
-        return rows;
+        return withDescriptions(rows, names, registry);
     }
 
     /**
@@ -699,10 +746,10 @@ public final class QueryEngine {
                 int v        = sorted.get(i)[0];
                 int classDid = classOf.readInt(v);
                 rows.add(new TopNRow(i + 1, v, names.nameOf(classDid),
-                    retained.readLong(v), (long) shallowSize.readInt(v) * 8L));
+                    retained.readLong(v), (long) shallowSize.readInt(v) * 8L, null));
             }
         }
-        return rows;
+        return withDescriptions(rows, names, registry);
     }
 
     /** Computes MAX or SUM of retained sizes over all set bits in {@code bits}. */
@@ -716,6 +763,69 @@ public final class QueryEngine {
             }
         }
         return func.equals("MAX") && acc == Long.MIN_VALUE ? 0 : acc;
+    }
+
+    // ── Description enrichment ────────────────────────────────────────────────
+
+    /**
+     * Returns a new list with descriptions filled in for {@code java.lang.Class} and
+     * {@code java.lang.String} objects. Class descriptions are the name of the represented class;
+     * String descriptions are the string's content (Latin-1 decoded, truncated to 50 chars).
+     */
+    private static List<TopNRow> withDescriptions(List<TopNRow> rows, ClassNameIndex names,
+                                                   IndexRegistry registry) throws IOException {
+        for (int i = 0; i < rows.size(); i++) {
+            TopNRow row = rows.get(i);
+            if ("java.lang.Class".equals(row.className())) {
+                String rep = names.nameOf(row.denseId());
+                if (!"?".equals(rep)) rows.set(i, rowWithDesc(row, rep));
+            }
+        }
+
+        boolean hasStrings = false;
+        for (TopNRow row : rows) {
+            if ("java.lang.String".equals(row.className())) { hasStrings = true; break; }
+        }
+        if (hasStrings && registry.hasPrimArrayIndex()) {
+            try (var fwd         = registry.openForwardRefs();
+                 var primOffsets = registry.openPrimArrayOffsets();
+                 var primData    = registry.openPrimArrayData()) {
+                for (int i = 0; i < rows.size(); i++) {
+                    TopNRow row = rows.get(i);
+                    if ("java.lang.String".equals(row.className())) {
+                        String content = readStringContent(row.denseId(), fwd, primOffsets, primData);
+                        if (content != null) rows.set(i, rowWithDesc(row, content));
+                    }
+                }
+            }
+        }
+
+        return rows;
+    }
+
+    private static TopNRow rowWithDesc(TopNRow row, String desc) {
+        return new TopNRow(row.rank(), row.denseId(), row.className(),
+                           row.retainedSize(), row.shallowSize(), desc);
+    }
+
+    private static String readStringContent(int denseId, CsrReader fwd,
+                                             IndexFile primOffsets, IndexFile primData) {
+        long start = fwd.start(denseId);
+        long end   = fwd.end(denseId);
+        if (start >= end) return null;
+        int byteArrayId = fwd.edge(start);
+
+        long offset = primOffsets.readLong(byteArrayId);
+        if (offset < 0) return null;
+
+        int length = primData.readIntAt(offset);
+        if (length <= 0) return length == 0 ? "" : null;
+
+        byte[] bytes = new byte[length];
+        for (int i = 0; i < length; i++) bytes[i] = primData.readByteAt(offset + 4 + i);
+
+        String s = new String(bytes, StandardCharsets.ISO_8859_1);
+        return s.length() > 50 ? s.substring(0, 20) + "..." + s.substring(s.length() - 20) : s;
     }
 
     private static boolean containsGlob(String s) {

@@ -16,8 +16,11 @@ public final class JsonlFormatter {
               .append(",\"id\":\"i").append(row.denseId()).append('"')
               .append(",\"type\":\"").append(esc(row.className())).append('"')
               .append(",\"retainedSize\":").append(row.retainedSize())
-              .append(",\"shallowSize\":").append(row.shallowSize())
-              .append("}\n");
+              .append(",\"shallowSize\":").append(row.shallowSize());
+            if (row.description() != null) {
+                sb.append(",\"description\":\"").append(descEsc(row.description())).append('"');
+            }
+            sb.append("}\n");
         }
         return sb.toString();
     }
@@ -46,6 +49,8 @@ public final class JsonlFormatter {
               .append(",\"retainedSize\":").append(node.retainedSize());
             if (node.notes() != null)
                 sb.append(",\"notes\":\"").append(esc(node.notes())).append('"');
+            if (node.via() != null)
+                sb.append(",\"via\":\"").append(esc(node.via())).append('"');
             sb.append("}\n");
         }
         return sb.toString();
@@ -58,5 +63,24 @@ public final class JsonlFormatter {
 
     private static String esc(String s) {
         return s.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private static String descEsc(String s) {
+        var sb = new StringBuilder(s.length() + 8);
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '"'  -> sb.append("\\\"");
+                case '\\' -> sb.append("\\\\");
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                case '\t' -> sb.append("\\t");
+                case '\b' -> sb.append("\\b");
+                case '\f' -> sb.append("\\f");
+                default   -> { if (c < 0x20) sb.append(String.format("\\u%04x", (int) c));
+                               else sb.append(c); }
+            }
+        }
+        return sb.toString();
     }
 }

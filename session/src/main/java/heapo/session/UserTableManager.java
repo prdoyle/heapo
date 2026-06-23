@@ -28,6 +28,7 @@ public final class UserTableManager {
             .column("class_name",    SQLDataType.CLOB.notNull())
             .column("retained_size", SQLDataType.BIGINT.notNull())
             .column("shallow_size",  SQLDataType.BIGINT.notNull())
+            .column("description",   SQLDataType.CLOB)
             .execute();
 
         var t = DSL.table(DSL.name(tableName));
@@ -38,6 +39,7 @@ public final class UserTableManager {
                 .set(DSL.field(DSL.name("class_name"),    String.class),  row.className())
                 .set(DSL.field(DSL.name("retained_size"), Long.class),    row.retainedSize())
                 .set(DSL.field(DSL.name("shallow_size"),  Long.class),    row.shallowSize())
+                .set(DSL.field(DSL.name("description"),   String.class),  row.description())
                 .execute();
         }
 

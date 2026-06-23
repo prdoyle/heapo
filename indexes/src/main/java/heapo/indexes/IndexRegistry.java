@@ -169,17 +169,24 @@ public final class IndexRegistry implements AutoCloseable {
             String[] parts = line.split("\t", 2);
             if (parts.length < 2) continue;
             int typeCode = Integer.parseInt(parts[1].trim());
-            defs.add(new FieldDef(parts[0], typeCode, offset));
-            offset += HprofReader.primitiveTypeSize(typeCode);
+            if (typeCode == HprofReader.TYPE_OBJECT) {
+                defs.add(new FieldDef(parts[0], typeCode, -1));
+            } else {
+                defs.add(new FieldDef(parts[0], typeCode, offset));
+                offset += HprofReader.primitiveTypeSize(typeCode);
+            }
         }
         return Collections.unmodifiableList(defs);
     }
 
     /** Total size in bytes of one instance's packed primitive record for the given schema. */
     public static int fieldRecordSize(List<FieldDef> schema) {
-        if (schema.isEmpty()) return 0;
-        FieldDef last = schema.getLast();
-        return last.byteOffset() + HprofReader.primitiveTypeSize(last.typeCode());
+        for (int i = schema.size() - 1; i >= 0; i--) {
+            FieldDef f = schema.get(i);
+            if (f.typeCode() != HprofReader.TYPE_OBJECT)
+                return f.byteOffset() + HprofReader.primitiveTypeSize(f.typeCode());
+        }
+        return 0;
     }
 
     /**
@@ -188,6 +195,32 @@ public final class IndexRegistry implements AutoCloseable {
      */
     public IndexFile openFieldValues(int classDenseId) throws IOException {
         return IndexFile.openRead(heap.outputDir().resolve("fields/" + classDenseId + ".bin"));
+    }
+
+    // ── Primitive-array data index ────────────────────────────────────────────
+
+    /** Returns true if the prim-array-data index was built by this unpack. */
+    public boolean hasPrimArrayIndex() {
+        return Files.exists(indexDir.resolve("prim-array-offsets.bin"));
+    }
+
+    /**
+     * Opens the prim-array offsets index.
+     * Entry {@code i} is the byte offset in {@link #openPrimArrayData()} where object {@code i}'s
+     * prim-array data starts ({@code [int length][byte[] data]}), or {@code -1} if object {@code i}
+     * is not a primitive array.
+     */
+    public IndexFile openPrimArrayOffsets() throws IOException {
+        return IndexFile.openRead(indexDir.resolve("prim-array-offsets.bin"));
+    }
+
+    /**
+     * Opens the prim-array data file.
+     * Each record: {@code [4-byte int length][length bytes data]}.
+     * Use {@link #openPrimArrayOffsets()} to get the byte offset for a specific object.
+     */
+    public IndexFile openPrimArrayData() throws IOException {
+        return IndexFile.openRead(indexDir.resolve("prim-array-data.bin"));
     }
 
     @Override public void close() { /* readers are opened/closed by callers */ }

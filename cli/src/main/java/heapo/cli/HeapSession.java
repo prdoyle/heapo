@@ -149,10 +149,13 @@ public final class HeapSession implements AutoCloseable {
     }
 
     private String handleExplainName(String name) throws SQLException {
-        var histIdOpt = names.resolve(name);
-        if (histIdOpt.isEmpty())
-            return "{\"error\":\"Unknown name: '" + escJson(name) + "'\"}\n";
-        int histId = histIdOpt.get();
+        int histId = parseHistId(name);
+        if (histId < 0) {
+            var histIdOpt = names.resolve(name);
+            if (histIdOpt.isEmpty())
+                return "{\"error\":\"Unknown name: '" + escJson(name) + "'\"}\n";
+            histId = histIdOpt.get();
+        }
         var entryOpt = history.findById(histId);
         if (entryOpt.isEmpty())
             return "{\"error\":\"History h" + histId + " not found\"}\n";
@@ -313,13 +316,36 @@ public final class HeapSession implements AutoCloseable {
         BitSet builtin = QueryEngine.buildBuiltinBitSet(heap, registry, name);
         if (builtin != null) return builtin;
 
-        int histId = names.resolve(name)
-            .orElseThrow(() -> new IllegalArgumentException("Unknown name: '" + name + "'"));
+        int histId = parseHistId(name);
+        if (histId < 0) {
+            histId = names.resolve(name)
+                .orElseThrow(() -> new IllegalArgumentException("Unknown name: '" + name + "'"));
+        }
+        // Fast path: current in-memory result (bitset not yet persisted to disk)
+        if (histId == thatHistId && that instanceof BitSetAnswer bsa) {
+            return (BitSet) bsa.bits().clone();
+        }
         var entry = history.findById(histId)
-            .orElseThrow(() -> new IllegalStateException("History h" + histId + " not found"));
+            .orElseThrow(() -> new IllegalArgumentException("No history entry " + name));
         if (entry.bitsetFile() != null) return loadBitSetFromFile(entry.bitsetFile());
+        if (entry.sqlTable() != null) throw new IllegalArgumentException(
+            name + " is a table result, not a bitset — query it with SQL SELECT");
         throw new IllegalArgumentException(
-            "'" + name + "' is a table result, not a bitset — use SQL SELECT to query it");
+            name + " was not persisted. Use CALL THAT <name> to save it for later reference.");
+    }
+
+    /**
+     * Parses a session sigil ({@code h<n>}, {@code s<n>}, {@code t<n>}) into a history ID.
+     * Returns {@code -1} if {@code name} does not match any sigil pattern.
+     */
+    private static int parseHistId(String name) {
+        if (name == null || name.length() < 2) return -1;
+        char first = name.charAt(0);
+        if (first != 'h' && first != 's' && first != 't') return -1;
+        for (int i = 1; i < name.length(); i++) {
+            if (!Character.isDigit(name.charAt(i))) return -1;
+        }
+        return Integer.parseInt(name.substring(1));
     }
 
     private BitSet applyWhereFilter(BitSet bits, DslParser.WhereFilter f, String contextClass)

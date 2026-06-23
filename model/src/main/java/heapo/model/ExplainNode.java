@@ -8,10 +8,15 @@ package heapo.model;
  * individual notes items are candidates to become first-class fields in this record.
  */
 public record ExplainNode(int denseId, String className, long retainedSize, int depth,
-                          String notes) {
+                          String notes, String via) {
 
-    /** Convenience constructor for nodes with no notes. */
+    /** Convenience constructor for nodes with no notes or via. */
     public ExplainNode(int denseId, String className, long retainedSize, int depth) {
-        this(denseId, className, retainedSize, depth, null);
+        this(denseId, className, retainedSize, depth, null, null);
+    }
+
+    /** Convenience constructor for nodes with notes but no via. */
+    public ExplainNode(int denseId, String className, long retainedSize, int depth, String notes) {
+        this(denseId, className, retainedSize, depth, notes, null);
     }
 }
