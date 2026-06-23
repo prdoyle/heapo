@@ -87,11 +87,11 @@ public final class Main implements Runnable {
 
         Other queries:
           STATUS                                  object and class counts
-          CLASSES [<glob>]                        all classes sorted by instance count
+          CLASSES <glob>                          classes matching glob, sorted by instance count
           EXPLAIN i<id>                           dominator chain to GC root
 
         Session commands:
-          NAMES [<glob>]           show named bitsets (optionally filtered)
+          NAMES <glob>             show named bitsets matching glob
           EXPLAIN <name>           show what command produced the named result
           CALL THAT <name>         name the last result (persists a bitset to disk)
           CALL h<id> <name>        name a specific history entry

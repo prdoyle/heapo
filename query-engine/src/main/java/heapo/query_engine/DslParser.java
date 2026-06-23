@@ -311,14 +311,14 @@ public final class DslParser {
     // ── Standalone queries ────────────────────────────────────────────────────
 
     private static ParseResult parseClasses(String[] t, int i) {
-        if (i >= t.length) return complete(new ClassesQuery(null), List.of(COMPLETE_CLASS));
+        if (i >= t.length) return incomplete(List.of(COMPLETE_CLASS));
         String glob = t[i++];
         if (i < t.length) return invalid("Unexpected tokens after CLASSES " + glob);
         return complete(new ClassesQuery(glob), List.of());
     }
 
     private static ParseResult parseNames(String[] t, int i) {
-        if (i >= t.length) return complete(new NamesQuery(null), List.of("<glob>"));
+        if (i >= t.length) return incomplete(List.of("<glob>"));
         String glob = t[i++];
         if (i < t.length) return invalid("Unexpected tokens after NAMES " + glob);
         return complete(new NamesQuery(glob), List.of());

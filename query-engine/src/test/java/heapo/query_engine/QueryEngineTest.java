@@ -60,12 +60,17 @@ class QueryEngineTest {
     }
 
     @Test
-    void parserClassesAll() {
-        var result = DslParser.parse("CLASSES");
+    void parserClassesRequiresGlob() {
+        assertInstanceOf(DslParser.Incomplete.class, DslParser.parse("CLASSES"));
+    }
+
+    @Test
+    void parserClassesStar() {
+        var result = DslParser.parse("CLASSES *");
         assertInstanceOf(DslParser.Complete.class, result);
         var action = ((DslParser.Complete) result).action();
         assertInstanceOf(DslParser.ClassesQuery.class, action);
-        assertNull(((DslParser.ClassesQuery) action).glob());
+        assertEquals("*", ((DslParser.ClassesQuery) action).glob());
     }
 
     @Test
@@ -160,7 +165,7 @@ class QueryEngineTest {
         assertInstanceOf(DslParser.StatusQuery.class,
             ((DslParser.Complete) DslParser.parse("STATUS")).action());
         assertInstanceOf(DslParser.NamesQuery.class,
-            ((DslParser.Complete) DslParser.parse("NAMES")).action());
+            ((DslParser.Complete) DslParser.parse("NAMES *")).action());
         assertInstanceOf(DslParser.ThatQuery.class,
             ((DslParser.Complete) DslParser.parse("THAT")).action());
         assertInstanceOf(DslParser.UndoQuery.class,

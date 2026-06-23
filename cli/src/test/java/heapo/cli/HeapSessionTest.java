@@ -46,7 +46,7 @@ class HeapSessionTest {
             String result = session.execute("CALL THAT myBars");
             assertTrue(result.contains("myBars"), "Result should confirm the bound name");
 
-            String names = session.execute("NAMES");
+            String names = session.execute("NAMES *");
             assertTrue(names.contains("myBars"), "NAMES should list myBars");
         }
     }
@@ -58,7 +58,7 @@ class HeapSessionTest {
             session.execute("CALL THAT tempName");
             session.execute("FORGET tempName");
 
-            String names = session.execute("NAMES");
+            String names = session.execute("NAMES *");
             assertFalse(names.contains("tempName"), "NAMES should not list forgotten name");
         }
     }
@@ -75,7 +75,7 @@ class HeapSessionTest {
 
         // Second session: verify the name survived
         try (var session = new HeapSession(heap, registry, localDb)) {
-            String names = session.execute("NAMES");
+            String names = session.execute("NAMES *");
             assertTrue(names.contains("persistedBars"),
                 "Name should survive across session restarts");
         }
@@ -122,7 +122,7 @@ class HeapSessionTest {
             session.execute("CALL THAT myBars");
 
             // Get the internal table name from names → history
-            String namesOutput = session.execute("NAMES");
+            String namesOutput = session.execute("NAMES *");
             assertTrue(namesOutput.contains("myBars"), "Expected myBars in names");
 
             // Get the history entry to find the sql_table name
@@ -172,7 +172,7 @@ class HeapSessionTest {
             assertFalse(undo.contains("\"error\""), "UNDO should succeed: " + undo);
             assertTrue(undo.contains("\"CALL\""), "UNDO response should mention CALL");
 
-            String names = session.execute("NAMES");
+            String names = session.execute("NAMES *");
             assertFalse(names.contains("tempName"), "Name should be removed after UNDO");
         }
     }
@@ -187,7 +187,7 @@ class HeapSessionTest {
             String undo = session.execute("UNDO");
             assertFalse(undo.contains("\"error\""), "UNDO of FORGET should succeed: " + undo);
 
-            String names = session.execute("NAMES");
+            String names = session.execute("NAMES *");
             assertTrue(names.contains("savedName"), "Name should be restored after UNDO of FORGET");
         }
     }
@@ -211,7 +211,7 @@ class HeapSessionTest {
             session.execute("CALL THAT myName"); // displaces the first binding
             session.execute("UNDO");
 
-            String names = session.execute("NAMES");
+            String names = session.execute("NAMES *");
             assertTrue(names.contains("myName"), "myName should still be bound after UNDO");
             // The restored binding should point to the first result (history id 1 or 2)
             assertTrue(names.contains("\"restored\"") || names.contains("myName"),
@@ -272,7 +272,7 @@ class HeapSessionTest {
 
         // New session — verify bitset survives via @id recall
         try (var session = new HeapSession(heap, registry, p)) {
-            String names = session.execute("NAMES");
+            String names = session.execute("NAMES *");
             assertTrue(names.contains("myBars"), "Name should survive restart");
 
             String recalled = session.execute("h" + targetHistId);
@@ -372,7 +372,7 @@ class HeapSessionTest {
             session.execute("CLASS heapo.samples.KnownObjects$Bar");
             session.execute("CALL THAT betaSet");
 
-            String all     = session.execute("NAMES");
+            String all     = session.execute("NAMES *");
             String matched = session.execute("NAMES alpha*");
             String none    = session.execute("NAMES zzzNone*");
 
