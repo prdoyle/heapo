@@ -644,85 +644,6 @@ public final class QueryEngine {
         return func.equals("MAX") && acc == Long.MIN_VALUE ? 0 : acc;
     }
 
-    /**
-     * Returns all objects in the dominator subtree rooted at {@code rootDenseId}.
-     * If {@code topN > 0}, only the top-N by retained size are returned; otherwise all.
-     * Results are sorted by retained size descending.
-     */
-    public static BitSet dominatorSubtreeBitSet(UnpackedHeap heap, IndexRegistry registry,
-                                                  int rootDenseId) throws IOException {
-        int objectCount = heap.objectCount();
-        var children = new ArrayList<List<Integer>>(objectCount);
-        for (int i = 0; i < objectCount; i++) children.add(new ArrayList<>());
-        try (var idom = registry.openIdom()) {
-            for (int v = 0; v < objectCount; v++) {
-                int parent = idom.readInt(v);
-                if (parent >= 0 && parent < objectCount) children.get(parent).add(v);
-            }
-        }
-        BitSet bits = new BitSet(objectCount);
-        var queue = new ArrayDeque<Integer>();
-        queue.add(rootDenseId);
-        while (!queue.isEmpty()) {
-            int cur = queue.poll();
-            bits.set(cur);
-            queue.addAll(children.get(cur));
-        }
-        return bits;
-    }
-
-    public static List<TopNRow> dominatorSubtree(UnpackedHeap heap, IndexRegistry registry,
-                                                   int rootDenseId, int topN) throws IOException {
-        var names       = ClassNameIndex.load(heap);
-        int objectCount = heap.objectCount();
-
-        // Build reverse idom map (children list) from a single scan of idom[]
-        var children = new ArrayList<List<Integer>>(objectCount);
-        for (int i = 0; i < objectCount; i++) children.add(new ArrayList<>());
-
-        try (var idom = registry.openIdom()) {
-            for (int v = 0; v < objectCount; v++) {
-                int parent = idom.readInt(v);
-                if (parent >= 0 && parent < objectCount) {
-                    children.get(parent).add(v);
-                }
-            }
-        }
-
-        // BFS from rootDenseId
-        var subtree  = new ArrayList<Integer>();
-        var queue    = new ArrayDeque<Integer>();
-        queue.add(rootDenseId);
-        while (!queue.isEmpty()) {
-            int cur = queue.poll();
-            subtree.add(cur);
-            queue.addAll(children.get(cur));
-        }
-
-        // Collect [denseId, retainedSize] and sort descending
-        var pairs = new ArrayList<long[]>(subtree.size());
-        try (var retained = registry.openRetainedSize()) {
-            for (int v : subtree) {
-                pairs.add(new long[]{v, retained.readLong(v)});
-            }
-        }
-        pairs.sort((a, b) -> Long.compare(b[1], a[1]));
-
-        int limit = topN > 0 ? Math.min(topN, pairs.size()) : pairs.size();
-        List<TopNRow> rows = new ArrayList<>(limit);
-        try (var shallowSize = registry.openShallowSize();
-             var classOf     = registry.openClassOf()) {
-
-            for (int i = 0; i < limit; i++) {
-                int v        = (int) pairs.get(i)[0];
-                long rs      = pairs.get(i)[1];
-                int classDid = classOf.readInt(v);
-                rows.add(new TopNRow(i + 1, v, names.nameOf(classDid),
-                    rs, (long) shallowSize.readInt(v) * 8L, null));
-            }
-        }
-        return withDescriptions(rows, names, registry);
-    }
 
     /**
      * Builds a bitset of all instances of {@code className} (or all objects if {@code "*"}).
@@ -1056,8 +977,7 @@ public final class QueryEngine {
 
     /**
      * Expands {@code retainerBits} to include every object in the dominator subtree of
-     * any object set in {@code retainerBits}.  Equivalent to the union of
-     * {@link #dominatorSubtree} results for each individual retainer object.
+     * any object set in {@code retainerBits}.
      */
     public static BitSet buildRetainedByBitSet(UnpackedHeap heap, IndexRegistry registry,
                                                 BitSet retainerBits) throws IOException {

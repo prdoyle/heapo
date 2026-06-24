@@ -605,39 +605,6 @@ public final class Unpacker {
         }
     }
 
-    private static void writeFieldSchemas(ScanHandler handler, Path fieldsDir) throws IOException {
-        // Inverse map: classDenseId → classObjectId (raw)
-        Map<Integer, Long> denseToRaw = new HashMap<>();
-        for (var e : handler.classDenseIds.entrySet()) denseToRaw.put(e.getValue(), e.getKey());
-
-        for (var entry : denseToRaw.entrySet()) {
-            int classDenseId = entry.getKey();
-            Long rawId = entry.getValue();
-
-            List<String> lines = new ArrayList<>();
-            long curClass = rawId;
-            while (curClass != 0) {
-                byte[] ftypes   = handler.classFields.get(curClass);
-                long[] fnameIds = handler.classFieldNames.get(curClass);
-                if (ftypes == null) break;
-                for (int i = 0; i < ftypes.length; i++) {
-                    int type = ftypes[i] & 0xFF;
-                    String name = (fnameIds != null && i < fnameIds.length)
-                        ? handler.strings.getOrDefault(fnameIds[i], "field_" + i)
-                        : "field_" + i;
-                    lines.add(name + "\t" + type);
-                }
-                Long superRaw = handler.superClasses.get(curClass);
-                curClass = (superRaw != null && superRaw != 0) ? superRaw : 0;
-            }
-
-            if (!lines.isEmpty()) {
-                Files.writeString(fieldsDir.resolve(classDenseId + ".schema"),
-                    String.join("\n", lines) + "\n");
-            }
-        }
-    }
-
     private static void writeStaticFieldSchemas(ScanHandler handler, Path fieldsDir) throws IOException {
         for (var entry : handler.staticFieldNames.entrySet()) {
             long classObjectId = entry.getKey();
