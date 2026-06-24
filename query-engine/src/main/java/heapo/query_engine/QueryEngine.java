@@ -548,68 +548,6 @@ public final class QueryEngine {
     }
 
     /**
-     * Returns all instances of the given class whose retained size satisfies the comparison.
-     * Results are sorted by retained size descending.
-     *
-     * @param op one of {@code ">"}, {@code ">="}, {@code "<"}, {@code "<="}, {@code "="}
-     */
-    public static List<TopNRow> allRetaining(UnpackedHeap heap, IndexRegistry registry,
-                                              String className, String op, long threshold)
-            throws IOException {
-        var names        = ClassNameIndex.load(heap);
-        int objectCount  = heap.objectCount();
-        boolean allObjs  = className.equals("*");
-        int classDenseId = allObjs ? -1 : names.resolve(className);
-        if (!allObjs && classDenseId < 0) return List.of();
-
-        var matchingLong = new ArrayList<long[]>(); // [denseId, retainedSize]
-
-        try (var il       = registry.openInstanceList();
-             var retained = registry.openRetainedSize()) {
-
-            if (allObjs) {
-                for (int v = 1; v < objectCount; v++) {
-                    long rs = retained.readLong(v);
-                    if (matches(rs, op, threshold)) matchingLong.add(new long[]{v, rs});
-                }
-            } else {
-                for (long e = il.start(classDenseId), end = il.end(classDenseId); e < end; e++) {
-                    int v  = il.edge(e);
-                    long rs = retained.readLong(v);
-                    if (matches(rs, op, threshold)) matchingLong.add(new long[]{v, rs});
-                }
-            }
-        }
-
-        matchingLong.sort((a, b) -> Long.compare(b[1], a[1])); // descending retained size
-
-        List<TopNRow> rows = new ArrayList<>(matchingLong.size());
-        try (var shallowSize = registry.openShallowSize();
-             var classOf     = registry.openClassOf()) {
-
-            for (int i = 0; i < matchingLong.size(); i++) {
-                int v        = (int) matchingLong.get(i)[0];
-                long rs      = matchingLong.get(i)[1];
-                int classDid = classOf.readInt(v);
-                rows.add(new TopNRow(i + 1, v, names.nameOf(classDid),
-                    rs, (long) shallowSize.readInt(v) * 8L, null));
-            }
-        }
-        return withDescriptions(rows, names, registry);
-    }
-
-    private static boolean matches(long value, String op, long threshold) {
-        return switch (op) {
-            case ">"  -> value >  threshold;
-            case ">=" -> value >= threshold;
-            case "<"  -> value <  threshold;
-            case "<=" -> value <= threshold;
-            case "="  -> value == threshold;
-            default   -> throw new IllegalArgumentException("Unknown op: " + op);
-        };
-    }
-
-    /**
      * Computes MAX or SUM of retained sizes across all instances of the given class.
      *
      * @param func {@code "MAX"} or {@code "SUM"}
