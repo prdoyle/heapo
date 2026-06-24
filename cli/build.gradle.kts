@@ -7,7 +7,8 @@ application {
     applicationName = "heapo"
     applicationDefaultJvmArgs = listOf(
         "--enable-preview",
-        "--enable-native-access=ALL-UNNAMED"
+        "--enable-native-access=ALL-UNNAMED",
+        "-XX:+HeapDumpOnOutOfMemoryError"
     )
 }
 
