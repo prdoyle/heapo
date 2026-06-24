@@ -259,13 +259,23 @@ public final class DslParser {
                 i++;
                 if (i >= t.length) return incomplete(List.of(COMPLETE_IDENT));
                 String field = t[i++];
-                if (i >= t.length) return incomplete(opList());
-                if (!isOp(t[i])) return invalid("Expected comparison op after WHERE " + field + ", got: " + t[i]);
-                String op = t[i++];
-                if (i >= t.length) return incomplete(List.of("<value>", "\"<string>\""));
-                String rawVal = t[i++];
+                if (i >= t.length) return incomplete(List.of("=", ">", ">=", "<", "<=", "*\"<string>\"*", "\"<string>\""));
+                // String patterns may appear directly after the field name (implied =) or after explicit =
+                boolean nextIsStringPat = t[i].startsWith("\"") || t[i].startsWith("*\"");
+                String op;
+                String rawVal;
+                if (nextIsStringPat) {
+                    op     = "=";
+                    rawVal = t[i++];
+                } else {
+                    if (!isOp(t[i])) return invalid("Expected comparison op after WHERE " + field + ", got: " + t[i]);
+                    op = t[i++];
+                    if (i >= t.length) return incomplete(List.of("<value>", "\"<string>\"", "*\"<string>\"*"));
+                    rawVal = t[i++];
+                }
                 boolean isStringPattern = rawVal.startsWith("\"") || rawVal.startsWith("*\"");
-                if (isStringPattern && eq(op, "=")) {
+                if (isStringPattern) {
+                    if (!eq(op, "=")) return invalid("String pattern requires = operator, got: " + op);
                     boolean leadingStar = rawVal.startsWith("*");
                     String rest = leadingStar ? rawVal.substring(1) : rawVal;
                     boolean trailingStar = rest.endsWith("\"*");
@@ -315,6 +325,11 @@ public final class DslParser {
                 return complete(new Pipeline(source, List.copyOf(filters), new SampleNTerminal(n)), List.of());
 
             } else {
+                // Check if the user accidentally used a top-level command as a filter
+                String up = t[i].toUpperCase();
+                if (List.of("INSPECT", "READ", "STATUS", "CLASSES", "NAMES", "EXPLAIN", "UNDO", "HISTORY")
+                          .contains(up))
+                    return invalid(up + " is a standalone command; to inspect an object use INSPECT i<n> directly");
                 return invalid("Expected filter or terminal keyword, got: " + t[i]);
             }
         }

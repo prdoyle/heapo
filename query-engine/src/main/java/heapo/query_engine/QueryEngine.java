@@ -301,18 +301,19 @@ public final class QueryEngine {
                                                   IndexFile primOffsets, IndexFile primData) {
         long start = fwd.start(denseId);
         long end   = fwd.end(denseId);
-        if (start >= end) return null;
-        int byteArrayId = fwd.edge(start);
+        for (long pos = start; pos < end; pos++) {
+            int byteArrayId = fwd.edge(pos);
+            long offset = primOffsets.readLong(byteArrayId);
+            if (offset < 0) continue;
 
-        long offset = primOffsets.readLong(byteArrayId);
-        if (offset < 0) return null;
+            int length = primData.readIntAt(offset);
+            if (length <= 0) return length == 0 ? "" : null;
 
-        int length = primData.readIntAt(offset);
-        if (length <= 0) return length == 0 ? "" : null;
-
-        byte[] bytes = new byte[length];
-        for (int i = 0; i < length; i++) bytes[i] = primData.readByteAt(offset + 4 + i);
-        return new String(bytes, StandardCharsets.ISO_8859_1);
+            byte[] bytes = new byte[length];
+            for (int i = 0; i < length; i++) bytes[i] = primData.readByteAt(offset + 4 + i);
+            return new String(bytes, StandardCharsets.ISO_8859_1);
+        }
+        return null;
     }
 
     private static List<FieldRow> inspectPrimArray(IndexRegistry registry, int denseId, int elemType)
@@ -1213,20 +1214,22 @@ public final class QueryEngine {
                                              IndexFile primOffsets, IndexFile primData) {
         long start = fwd.start(denseId);
         long end   = fwd.end(denseId);
-        if (start >= end) return null;
-        int byteArrayId = fwd.edge(start);
+        // Scan all forward refs looking for a primitive array (handles JVMs where
+        // String.value is not the first reference field, e.g. additional hidden fields).
+        for (long pos = start; pos < end; pos++) {
+            int byteArrayId = fwd.edge(pos);
+            long offset = primOffsets.readLong(byteArrayId);
+            if (offset < 0) continue;  // not a prim array — try next ref
 
-        long offset = primOffsets.readLong(byteArrayId);
-        if (offset < 0) return null;
+            int length = primData.readIntAt(offset);
+            if (length <= 0) return length == 0 ? "" : null;
 
-        int length = primData.readIntAt(offset);
-        if (length <= 0) return length == 0 ? "" : null;
-
-        byte[] bytes = new byte[length];
-        for (int i = 0; i < length; i++) bytes[i] = primData.readByteAt(offset + 4 + i);
-
-        String s = new String(bytes, StandardCharsets.ISO_8859_1);
-        return s.length() > 50 ? s.substring(0, 20) + "..." + s.substring(s.length() - 20) : s;
+            byte[] bytes = new byte[length];
+            for (int i = 0; i < length; i++) bytes[i] = primData.readByteAt(offset + 4 + i);
+            String s = new String(bytes, StandardCharsets.ISO_8859_1);
+            return s.length() > 50 ? s.substring(0, 20) + "..." + s.substring(s.length() - 20) : s;
+        }
+        return null;
     }
 
     /** Returns the object-ref position (among TYPE_OBJECT fields) of Thread.name, or -1. */

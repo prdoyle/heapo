@@ -1,6 +1,7 @@
 package heapo.query_engine;
 
 import heapo.indexes.IndexRegistry;
+import heapo.model.FieldRow;
 import heapo.model.TopNRow;
 import heapo.unpack.Unpacker;
 import heapo.unpack.UnpackedHeap;
@@ -8,7 +9,10 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.*;
+import java.util.BitSet;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -96,6 +100,63 @@ class QueryEngineTest {
         var result = DslParser.parse("STATUS");
         assertInstanceOf(DslParser.Complete.class, result);
         assertInstanceOf(DslParser.StatusQuery.class, ((DslParser.Complete) result).action());
+    }
+
+    @Test
+    void parserWhereStringPatternWithoutEquals() {
+        // Issue 1: string patterns should not require explicit = operator
+        var result = DslParser.parse("CLASS com.example.Thread WHERE name *\"write\"* COUNT");
+        assertInstanceOf(DslParser.Complete.class, result, "Should parse without = operator");
+        var p = (DslParser.Pipeline) ((DslParser.Complete) result).action();
+        assertEquals(1, p.filters().size());
+        var f = (DslParser.WhereStringFilter) p.filters().get(0);
+        assertEquals("name", f.field());
+        assertEquals("write", f.value());
+        assertTrue(f.leadingStar());
+        assertTrue(f.trailingStar());
+    }
+
+    @Test
+    void parserWhereStringPatternWithEquals() {
+        // Explicit = operator should still work
+        var result = DslParser.parse("CLASS com.example.Thread WHERE name = *\"write\"* COUNT");
+        assertInstanceOf(DslParser.Complete.class, result, "Should parse with = operator");
+        var p = (DslParser.Pipeline) ((DslParser.Complete) result).action();
+        var f = (DslParser.WhereStringFilter) p.filters().get(0);
+        assertEquals("write", f.value());
+        assertTrue(f.leadingStar() && f.trailingStar());
+    }
+
+    @Test
+    void parserWhereStringPatternAllForms() {
+        // exact match
+        var exact = (DslParser.Pipeline) ((DslParser.Complete)
+            DslParser.parse("ALL WHERE name \"exact\" COUNT")).action();
+        var fe = (DslParser.WhereStringFilter) exact.filters().get(0);
+        assertFalse(fe.leadingStar()); assertFalse(fe.trailingStar()); assertEquals("exact", fe.value());
+
+        // prefix match
+        var prefix = (DslParser.Pipeline) ((DslParser.Complete)
+            DslParser.parse("ALL WHERE name \"pre\"* COUNT")).action();
+        var fp = (DslParser.WhereStringFilter) prefix.filters().get(0);
+        assertFalse(fp.leadingStar()); assertTrue(fp.trailingStar()); assertEquals("pre", fp.value());
+
+        // suffix match
+        var suffix = (DslParser.Pipeline) ((DslParser.Complete)
+            DslParser.parse("ALL WHERE name *\"suf\" COUNT")).action();
+        var fs = (DslParser.WhereStringFilter) suffix.filters().get(0);
+        assertTrue(fs.leadingStar()); assertFalse(fs.trailingStar()); assertEquals("suf", fs.value());
+    }
+
+    @Test
+    void parserInspectAfterClassGivesHelpfulError() {
+        // Issue 4: CLASS foo INSPECT id should give a helpful error
+        var result = DslParser.parse("CLASS org.example.Foo INSPECT i123");
+        assertInstanceOf(DslParser.Invalid.class, result);
+        String msg = ((DslParser.Invalid) result).message();
+        assertTrue(msg.contains("INSPECT"), "Error should mention INSPECT: " + msg);
+        assertTrue(msg.toLowerCase().contains("standalone") || msg.toLowerCase().contains("directly"),
+            "Error should suggest using INSPECT directly: " + msg);
     }
 
     @Test
@@ -277,6 +338,60 @@ class QueryEngineTest {
             assertTrue(classes.get(i).instanceCount() >= classes.get(i + 1).instanceCount(),
                 "Should be sorted descending by instance count");
         }
+    }
+
+    @Test
+    void inspectDeepHierarchyFieldsAligned() throws Exception {
+        // Issue 3: INSPECT field labels should be correctly aligned for multi-level hierarchies.
+        // DeepDerived extends DeepMiddle extends DeepBase, each adding int and Object fields.
+        var rows = QueryEngine.allTopByRetainedSize(
+            knownHeap, knownReg, "heapo.samples.KnownObjects$DeepDerived", 1);
+        assertFalse(rows.isEmpty(), "DeepDerived instance must be present");
+        int denseId = rows.get(0).denseId();
+
+        List<FieldRow> fields = QueryEngine.inspect(knownHeap, knownReg, denseId);
+        assertFalse(fields.isEmpty(), "INSPECT must return fields");
+
+        Map<String, FieldRow> byName = fields.stream()
+            .collect(Collectors.toMap(FieldRow::fieldName, f -> f));
+
+        assertTrue(byName.containsKey("derivedInt"), "derivedInt field must be present");
+        assertTrue(byName.containsKey("middleInt"),  "middleInt field must be present");
+        assertTrue(byName.containsKey("baseInt"),    "baseInt field must be present");
+
+        // Verify each primitive has the expected value — misalignment would give wrong ints
+        assertEquals(111L, byName.get("derivedInt").primValue(),
+            "derivedInt must equal 111; misalignment means wrong field offset");
+        assertEquals(222L, byName.get("middleInt").primValue(),
+            "middleInt must equal 222; misalignment means wrong field offset");
+        assertEquals(333L, byName.get("baseInt").primValue(),
+            "baseInt must equal 333; misalignment means wrong field offset");
+    }
+
+    @Test
+    void whereStringFilterMatchesSubstring() throws Exception {
+        // Issue 2: WHERE string filter should match objects by String field content.
+        var names = ClassNameIndex.load(knownHeap);
+        int classId = names.resolve("heapo.samples.KnownObjects$Named");
+        assertTrue(classId >= 0, "Named class must be in heap");
+
+        BitSet all = new BitSet(knownHeap.objectCount());
+        all.set(0, knownHeap.objectCount());
+
+        // "hello world" contains "hello", "goodbye cruel world" does not
+        BitSet matches = QueryEngine.buildWhereStringFilterBitSet(
+            knownHeap, knownReg, all, classId, "name", "hello", true, true);
+        assertEquals(1, matches.cardinality(), "Exactly one Named should contain 'hello'");
+
+        // Both names contain "world"
+        BitSet bothWorld = QueryEngine.buildWhereStringFilterBitSet(
+            knownHeap, knownReg, all, classId, "name", "world", true, true);
+        assertEquals(2, bothWorld.cardinality(), "Both Named instances should contain 'world'");
+
+        // Exact match
+        BitSet exact = QueryEngine.buildWhereStringFilterBitSet(
+            knownHeap, knownReg, all, classId, "name", "hello world", false, false);
+        assertEquals(1, exact.cardinality(), "Exactly one Named should equal 'hello world'");
     }
 
     @Test
