@@ -386,6 +386,34 @@ class QueryEngineTest {
     }
 
     @Test
+    void fieldSchemasAndBinaryFilesAreConsistent() throws Exception {
+        // Every .bin file's size must be a multiple of the schema's record size.
+        // A violation means schema and data were produced from different hierarchy walks.
+        Path fieldsDir = knownHeap.outputDir().resolve("fields");
+        if (!Files.exists(fieldsDir)) return;
+        int checkedCount = 0;
+        try (var stream = Files.list(fieldsDir)) {
+            var schemaFiles = stream.filter(p -> p.getFileName().toString().endsWith(".schema")).toList();
+            for (Path schemaFile : schemaFiles) {
+                String fname = schemaFile.getFileName().toString();
+                int classDenseId = Integer.parseInt(fname.substring(0, fname.length() - ".schema".length()));
+                Path binFile = fieldsDir.resolve(classDenseId + ".bin");
+                if (!Files.exists(binFile)) continue;
+                List<IndexRegistry.FieldDef> schema = knownReg.loadFieldSchema(classDenseId);
+                if (schema.isEmpty()) continue;
+                int recordSize = IndexRegistry.fieldRecordSize(schema);
+                long binSize = Files.size(binFile);
+                assertEquals(0, binSize % recordSize,
+                    "Binary field file for class " + classDenseId + " has size " + binSize
+                    + " which is not a multiple of schema record size " + recordSize
+                    + " — schema and data were generated from different hierarchy walks");
+                checkedCount++;
+            }
+        }
+        assertTrue(checkedCount > 0, "Expected at least one class with both .schema and .bin");
+    }
+
+    @Test
     void explainReturnsPathToRoot() throws Exception {
         var fooRows = QueryEngine.allTopByRetainedSize(
             knownHeap, knownReg, "heapo.samples.KnownObjects$Foo", 1);

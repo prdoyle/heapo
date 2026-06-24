@@ -84,7 +84,6 @@ public final class Unpacker {
         Path fieldsDir = outputDir.resolve("fields");
         Files.createDirectories(fieldsDir);
         resolveAndWriteFieldValues(handler, fieldValuesTempDir, fieldsDir, sortedRawIds, denseIds);
-        writeFieldSchemas(handler, fieldsDir);
         writeStaticFieldSchemas(handler, fieldsDir);
 
         buildPrimArrayIndex(primArrayScratch, indexDir, objectCount);
@@ -526,15 +525,23 @@ public final class Unpacker {
             Long rawClassId = denseToRaw.get(classDenseId);
             if (rawClassId == null) continue;
 
-            // Compute scratch and final record layouts for this class hierarchy
+            // Compute scratch and final record layouts, and collect field names for the schema.
+            // Schema is written from the same fieldInfos that governs the binary layout —
+            // so schema and data are provably derived from the same computation.
             var fieldInfos = new ArrayList<int[]>();  // [scratchOffset, finalOffset, typeCode, scratchSize]
-            int scratchOff = 0, finalOff = 0;
+            var fieldNames = new ArrayList<String>();
+            int scratchOff = 0, finalOff = 0, fieldIdx = 0;
             long curClass = rawClassId;
             while (curClass != 0) {
-                byte[] ftypes = handler.classFields.get(curClass);
+                byte[] ftypes   = handler.classFields.get(curClass);
+                long[] fnameIds = handler.classFieldNames.get(curClass);
                 if (ftypes == null) break;
-                for (byte ftype : ftypes) {
-                    int type = ftype & 0xFF;
+                for (int i = 0; i < ftypes.length; i++) {
+                    int type = ftypes[i] & 0xFF;
+                    String name = (fnameIds != null && i < fnameIds.length)
+                        ? handler.strings.getOrDefault(fnameIds[i], "field_" + fieldIdx)
+                        : "field_" + fieldIdx;
+                    fieldNames.add(name);
                     if (type == HprofReader.TYPE_OBJECT) {
                         fieldInfos.add(new int[]{scratchOff, finalOff, type, 8});
                         scratchOff += 8;
@@ -545,6 +552,7 @@ public final class Unpacker {
                         scratchOff += sz;
                         finalOff   += sz;
                     }
+                    fieldIdx++;
                 }
                 Long superRaw = handler.superClasses.get(curClass);
                 curClass = (superRaw != null && superRaw != 0) ? superRaw : 0;
@@ -553,7 +561,19 @@ public final class Unpacker {
 
             int scratchRecordSize = scratchOff;
             int finalRecordSize   = finalOff;
-            long numInstances     = Files.size(src) / scratchRecordSize;
+            long srcSize = Files.size(src);
+            if (srcSize % scratchRecordSize != 0)
+                throw new IOException("Field scratch file for class " + classDenseId
+                    + " is " + srcSize + " bytes, not a multiple of scratch record size "
+                    + scratchRecordSize + " — writeAllFields wrote short records (buf exhausted before end of hierarchy)");
+            long numInstances = srcSize / scratchRecordSize;
+
+            // Write schema derived from the same field layout used for the binary
+            var schemaLines = new ArrayList<String>(fieldInfos.size());
+            for (int i = 0; i < fieldInfos.size(); i++)
+                schemaLines.add(fieldNames.get(i) + "\t" + fieldInfos.get(i)[2]);
+            Files.writeString(fieldsDir.resolve(classDenseId + ".schema"),
+                String.join("\n", schemaLines) + "\n");
 
             byte[] scratchBuf = new byte[scratchRecordSize];
             byte[] finalBuf   = new byte[finalRecordSize];
