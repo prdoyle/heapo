@@ -173,24 +173,24 @@ public final class IndexRegistry implements AutoCloseable {
     }
 
     /**
-     * Returns the raw bytes of gc-root-type-map.bin (one byte per dense ID, 0 = not a root),
-     * or null if the file does not exist (indexes built before this feature was added).
+     * Opens gc-root-type-map.bin (one byte per dense ID, 0 = not a root) as a memory-mapped
+     * IndexFile, or returns null if the file does not exist (indexes built before this feature).
      */
-    public byte[] loadGcRootTypeMap() throws IOException {
+    public IndexFile openGcRootTypeMap() throws IOException {
         Path p = indexDir.resolve("gc-root-type-map.bin");
-        return Files.exists(p) ? Files.readAllBytes(p) : null;
+        return Files.exists(p) ? IndexFile.openRead(p) : null;
     }
 
-    /** Returns one byte per dense ID: 1 if object array, 0 otherwise. Null if file absent (old index). */
-    public byte[] loadIsObjArray() throws IOException {
+    /** Opens is-obj-array.bin (one byte per dense ID: 1=obj array) as IndexFile, or null if absent. */
+    public IndexFile openIsObjArray() throws IOException {
         Path p = indexDir.resolve("is-obj-array.bin");
-        return Files.exists(p) ? Files.readAllBytes(p) : null;
+        return Files.exists(p) ? IndexFile.openRead(p) : null;
     }
 
-    /** Returns one byte per dense ID: HprofReader element type code if primitive array, 0 otherwise. Null if file absent. */
-    public byte[] loadPrimArrayTypes() throws IOException {
+    /** Opens prim-array-types.bin (one byte per dense ID: element type code, 0=not prim array) as IndexFile, or null if absent. */
+    public IndexFile openPrimArrayTypes() throws IOException {
         Path p = indexDir.resolve("prim-array-types.bin");
-        return Files.exists(p) ? Files.readAllBytes(p) : null;
+        return Files.exists(p) ? IndexFile.openRead(p) : null;
     }
 
     // ── Field-value index ─────────────────────────────────────────────────────
@@ -215,12 +215,8 @@ public final class IndexRegistry implements AutoCloseable {
             String[] parts = line.split("\t", 2);
             if (parts.length < 2) continue;
             int typeCode = Integer.parseInt(parts[1].trim());
-            if (typeCode == HprofReader.TYPE_OBJECT) {
-                defs.add(new FieldDef(parts[0], typeCode, -1));
-            } else {
-                defs.add(new FieldDef(parts[0], typeCode, offset));
-                offset += HprofReader.primitiveTypeSize(typeCode);
-            }
+            defs.add(new FieldDef(parts[0], typeCode, offset));
+            offset += typeCode == HprofReader.TYPE_OBJECT ? 4 : HprofReader.primitiveTypeSize(typeCode);
         }
         return Collections.unmodifiableList(defs);
     }
@@ -237,14 +233,12 @@ public final class IndexRegistry implements AutoCloseable {
                 .toList();
     }
 
-    /** Total size in bytes of one instance's packed primitive record for the given schema. */
+    /** Total size in bytes of one instance's packed field record for the given schema. */
     public static int fieldRecordSize(List<FieldDef> schema) {
-        for (int i = schema.size() - 1; i >= 0; i--) {
-            FieldDef f = schema.get(i);
-            if (f.typeCode() != HprofReader.TYPE_OBJECT)
-                return f.byteOffset() + HprofReader.primitiveTypeSize(f.typeCode());
-        }
-        return 0;
+        if (schema.isEmpty()) return 0;
+        FieldDef last = schema.get(schema.size() - 1);
+        int typeSize = last.typeCode() == HprofReader.TYPE_OBJECT ? 4 : HprofReader.primitiveTypeSize(last.typeCode());
+        return last.byteOffset() + typeSize;
     }
 
     /**

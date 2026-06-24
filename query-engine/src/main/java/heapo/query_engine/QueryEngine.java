@@ -41,7 +41,8 @@ public final class QueryEngine {
              var rank = registry.openRetainedSizeRank()) {
 
             if (allObjs) {
-                for (int v = 0; v < objectCount; v++) {
+                // Dense ID 0 is the null sentinel — skip it
+                for (int v = 1; v < objectCount; v++) {
                     topN.offer(new int[]{v, rank.readInt(v)});
                     if (topN.size() > n) topN.poll();
                 }
@@ -83,7 +84,8 @@ public final class QueryEngine {
         int classDenseId = allObjs ? -1 : names.resolve(className);
         if (!allObjs && classDenseId < 0) return 0;
 
-        if (allObjs) return objectCount;
+        // objectCount includes the null sentinel at dense ID 0; real objects are 1..objectCount-1
+        if (allObjs) return objectCount - 1;
         try (var il = registry.openInstanceList()) {
             return il.degree(classDenseId);
         }
@@ -120,17 +122,17 @@ public final class QueryEngine {
      */
     public static List<ExplainNode> explain(UnpackedHeap heap, IndexRegistry registry,
                                              int denseId) throws IOException {
-        var names        = ClassNameIndex.load(heap);
-        var path         = new ArrayList<ExplainNode>();
-        var classDids    = new ArrayList<Integer>();
-        byte[] gcRootTypeMap = registry.loadGcRootTypeMap();
+        var names     = ClassNameIndex.load(heap);
+        var path      = new ArrayList<ExplainNode>();
+        var classDids = new ArrayList<Integer>();
 
         boolean hasStrings = false;
 
-        try (var idom     = registry.openIdom();
-             var retained = registry.openRetainedSize();
-             var classOf  = registry.openClassOf();
-             var fwd      = registry.openForwardRefs()) {
+        try (var gcRootTypeMap = registry.openGcRootTypeMap();
+             var idom          = registry.openIdom();
+             var retained      = registry.openRetainedSize();
+             var classOf       = registry.openClassOf();
+             var fwd           = registry.openForwardRefs()) {
 
             int cur   = denseId;
             int depth = 0;
@@ -218,21 +220,99 @@ public final class QueryEngine {
 
     public static List<FieldRow> inspect(UnpackedHeap heap, IndexRegistry registry, int denseId)
             throws IOException {
-        var names   = ClassNameIndex.load(heap);
-        byte[] isObjArray = registry.loadIsObjArray();
-        byte[] primTypes  = registry.loadPrimArrayTypes();
+        var names = ClassNameIndex.load(heap);
+        try (var isObjArrayFile = registry.openIsObjArray();
+             var primTypesFile  = registry.openPrimArrayTypes()) {
 
-        boolean isPrimArray = primTypes != null && denseId < primTypes.length && primTypes[denseId] != 0;
-        boolean isObjArr    = !isPrimArray && isObjArray != null
-                              && denseId < isObjArray.length && isObjArray[denseId] != 0;
+            int primType = primTypesFile != null ? (primTypesFile.readByteAt(denseId) & 0xFF) : 0;
+            boolean isPrimArray = primType != 0;
+            boolean isObjArr    = !isPrimArray && isObjArrayFile != null
+                                  && isObjArrayFile.readByteAt(denseId) != 0;
 
-        if (isPrimArray) {
-            return inspectPrimArray(registry, denseId, primTypes[denseId] & 0xFF);
-        } else if (isObjArr) {
-            return inspectObjArray(heap, registry, names, denseId);
-        } else {
-            return inspectInstance(heap, registry, names, denseId, isObjArray);
+            if (isPrimArray) {
+                return inspectPrimArray(registry, denseId, primType);
+            } else if (isObjArr) {
+                return inspectObjArray(heap, registry, names, denseId, isObjArrayFile, primTypesFile);
+            } else {
+                return inspectInstance(heap, registry, names, denseId, isObjArrayFile, primTypesFile);
+            }
         }
+    }
+
+    /**
+     * Returns the full untruncated content of the object identified by {@code denseId}.
+     * For byte arrays: decoded as UTF-8 (or hex if not valid UTF-8).
+     * For char arrays: decoded as UTF-16BE.
+     * For java.lang.String: reads its backing char/byte array.
+     * For other types: returns a descriptive message.
+     */
+    public static String readFull(UnpackedHeap heap, IndexRegistry registry, int denseId)
+            throws IOException {
+        if (!registry.hasPrimArrayIndex()) return "(no prim-array index)";
+
+        try (var primTypesFile = registry.openPrimArrayTypes()) {
+            int primType = primTypesFile != null ? (primTypesFile.readByteAt(denseId) & 0xFF) : 0;
+
+            if (primType != 0) {
+                if (primType == HprofReader.TYPE_BYTE || primType == HprofReader.TYPE_CHAR) {
+                    try (var offsets = registry.openPrimArrayOffsets();
+                         var data    = registry.openPrimArrayData()) {
+                        long off = offsets.readLong(denseId);
+                        if (off < 0) return "(empty)";
+                        int byteLen = data.readIntAt(off);
+                        byte[] bytes = new byte[byteLen];
+                        for (int i = 0; i < byteLen; i++)
+                            bytes[i] = (byte) data.readByteAt(off + 4L + i);
+                        if (primType == HprofReader.TYPE_CHAR) {
+                            // UTF-16BE char array
+                            var sb = new StringBuilder(byteLen / 2);
+                            for (int i = 0; i < byteLen - 1; i += 2)
+                                sb.append((char) (((bytes[i] & 0xFF) << 8) | (bytes[i+1] & 0xFF)));
+                            return sb.toString();
+                        } else {
+                            // byte array: return as string if valid UTF-8, else hex
+                            try {
+                                return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+                            } catch (Exception e) {
+                                var sb = new StringBuilder();
+                                for (byte b : bytes) sb.append(String.format("%02x ", b));
+                                return sb.toString().trim();
+                            }
+                        }
+                    }
+                }
+                return "(" + primTypeName(primType) + "[] — use INSPECT for element values)";
+            }
+        }
+
+        // Is it a String? Try reading its value field.
+        try (var fwd     = registry.openForwardRefs();
+             var offsets = registry.openPrimArrayOffsets();
+             var data    = registry.openPrimArrayData()) {
+            String s = readStringContentFull(denseId, fwd, offsets, data);
+            if (s != null) return s;
+        }
+
+        return "(not a String or byte[]/char[])";
+    }
+
+    /** Like readStringContent but without truncation. */
+    private static String readStringContentFull(int denseId, CsrReader fwd,
+                                                  IndexFile primOffsets, IndexFile primData) {
+        long start = fwd.start(denseId);
+        long end   = fwd.end(denseId);
+        if (start >= end) return null;
+        int byteArrayId = fwd.edge(start);
+
+        long offset = primOffsets.readLong(byteArrayId);
+        if (offset < 0) return null;
+
+        int length = primData.readIntAt(offset);
+        if (length <= 0) return length == 0 ? "" : null;
+
+        byte[] bytes = new byte[length];
+        for (int i = 0; i < length; i++) bytes[i] = primData.readByteAt(offset + 4 + i);
+        return new String(bytes, StandardCharsets.ISO_8859_1);
     }
 
     private static List<FieldRow> inspectPrimArray(IndexRegistry registry, int denseId, int elemType)
@@ -263,7 +343,8 @@ public final class QueryEngine {
     }
 
     private static List<FieldRow> inspectObjArray(UnpackedHeap heap, IndexRegistry registry,
-                                                   ClassNameIndex names, int denseId)
+                                                   ClassNameIndex names, int denseId,
+                                                   IndexFile isObjArrayFile, IndexFile primTypesFile)
             throws IOException {
         var rows = new ArrayList<FieldRow>();
         try (var fwd      = registry.openForwardRefs();
@@ -275,8 +356,7 @@ public final class QueryEngine {
             int idx = 0;
             for (long pos = start; pos < end; pos++, idx++) {
                 int refId = fwd.edge(pos);
-                int refClassDid = classOf.readInt(refId);
-                String refClass = names.nameOf(refClassDid);
+                String refClass = resolveRefClass(refId, names, classOf, isObjArrayFile, primTypesFile);
                 long ret = retained.readLong(refId);
                 long sha = (long) shallow.readInt(refId) * 8L;
                 rows.add(new FieldRow("[" + idx + "]", refId, false, refClass, ret, sha, null, null, 0));
@@ -285,27 +365,39 @@ public final class QueryEngine {
         return enrichFieldRows(rows, names, registry);
     }
 
+    private static String resolveRefClass(int refId, ClassNameIndex names, IndexFile classOf,
+                                           IndexFile isObjArrayFile, IndexFile primTypesFile) throws IOException {
+        if (primTypesFile != null && primTypesFile.readByteAt(refId) != 0)
+            return primTypeName(primTypesFile.readByteAt(refId) & 0xFF) + "[]";
+        int refClassDid = classOf.readInt(refId);
+        if (isObjArrayFile != null && isObjArrayFile.readByteAt(refId) != 0)
+            return names.nameOf(refClassDid) + "[]";
+        return names.nameOf(refClassDid);
+    }
+
+    /**
+     * Inspects a regular instance by reading ALL fields (TYPE_OBJECT and primitives) from
+     * the field-value index. Dense ID 0 in a TYPE_OBJECT slot means null.
+     */
     private static List<FieldRow> inspectInstance(UnpackedHeap heap, IndexRegistry registry,
                                                    ClassNameIndex names, int denseId,
-                                                   byte[] isObjArray) throws IOException {
-        int classDid;
-        List<IndexRegistry.FieldDef> schema;
-        long fwdStart;
-        long fwdEnd;
+                                                   IndexFile isObjArrayFile, IndexFile primTypesFile)
+            throws IOException {
         var rows = new ArrayList<FieldRow>();
 
         try (var classOf  = registry.openClassOf();
-             var fwd      = registry.openForwardRefs();
              var retained = registry.openRetainedSize();
              var shallow  = registry.openShallowSize()) {
 
-            classDid = classOf.readInt(denseId);
-            schema   = registry.loadFieldSchema(classDid);
+            int classDid = classOf.readInt(denseId);
+            List<IndexRegistry.FieldDef> schema = registry.loadFieldSchema(classDid);
             if (schema.isEmpty()) return List.of();
 
-            fwdStart = fwd.start(denseId);
-            fwdEnd   = fwd.end(denseId);
+            int recordSize = IndexRegistry.fieldRecordSize(schema);
+            if (recordSize == 0) return List.of();
 
+            // Find instanceIdx: sequential position of this instance among non-obj-array instances
+            // of its class (the field-value file is indexed in this order).
             int instanceIdx = -1;
             try (var il = registry.openInstanceList()) {
                 long ilStart = il.start(classDid);
@@ -313,47 +405,37 @@ public final class QueryEngine {
                 int count = 0;
                 for (long pos = ilStart; pos < ilEnd; pos++) {
                     int id = il.edge(pos);
-                    if (isObjArray != null && id < isObjArray.length && isObjArray[id] != 0) continue;
+                    if (isObjArrayFile != null && isObjArrayFile.readByteAt(id) != 0) continue;
                     if (id == denseId) { instanceIdx = count; break; }
                     count++;
                 }
             }
+            if (instanceIdx < 0) return List.of();
 
-            int recordSize = IndexRegistry.fieldRecordSize(schema);
-            IndexFile fv = null;
-            if (instanceIdx >= 0 && recordSize > 0) {
-                try { fv = registry.openFieldValues(classDid); } catch (IOException ignored) {}
-            }
-            try {
-                int objRefPos = 0;
+            try (var fv = registry.openFieldValues(classDid)) {
                 for (var field : schema) {
-                    String fname = field.name();
-                    int tc = field.typeCode();
+                    String fname  = field.name();
+                    int    tc     = field.typeCode();
+                    long   byteOff = (long) instanceIdx * recordSize + field.byteOffset();
+
                     if (tc == HprofReader.TYPE_OBJECT) {
-                        long pos = fwdStart + objRefPos;
-                        if (pos < fwdEnd) {
-                            int refId = fwd.edge(pos);
-                            int refClassDid = classOf.readInt(refId);
-                            String refClass = names.nameOf(refClassDid);
+                        int refId = fv.readIntAt(byteOff);
+                        if (refId == 0) {
+                            rows.add(new FieldRow(fname, -1, true, null, -1, -1, null, null, 0));
+                        } else {
+                            String refClass = resolveRefClass(refId, names, classOf, isObjArrayFile, primTypesFile);
                             long ret = retained.readLong(refId);
                             long sha = (long) shallow.readInt(refId) * 8L;
                             rows.add(new FieldRow(fname, refId, false, refClass, ret, sha, null, null, 0));
-                        } else {
-                            rows.add(new FieldRow(fname, -1, true, null, -1, -1, null, null, 0));
                         }
-                        objRefPos++;
                     } else {
-                        long val = 0;
-                        if (fv != null && instanceIdx >= 0) {
-                            long byteOff = (long) instanceIdx * recordSize + field.byteOffset();
-                            val = readPrimitive(fv, byteOff, tc);
-                        }
+                        long val  = readPrimitive(fv, byteOff, tc);
                         String desc = formatPrimValue(val, tc);
                         rows.add(new FieldRow(fname, -1, false, null, -1, -1, desc, primTypeName(tc), val));
                     }
                 }
-            } finally {
-                if (fv != null) fv.close();
+            } catch (IOException ignored) {
+                // Field values file absent for this class (e.g. no fields)
             }
         }
         return enrichFieldRows(rows, names, registry);
@@ -431,9 +513,9 @@ public final class QueryEngine {
         return (relPos < names.size()) ? names.get(relPos) : "(indirect)";
     }
 
-    private static String gcRootTypeLabel(byte[] typeMap, int denseId) {
-        if (typeMap == null || denseId < 0 || denseId >= typeMap.length) return "GC root";
-        return switch (typeMap[denseId] & 0xFF) {
+    private static String gcRootTypeLabel(IndexFile typeMap, int denseId) {
+        if (typeMap == null || denseId < 0) return "GC root";
+        return switch (typeMap.readByteAt(denseId) & 0xFF) {
             case HprofReader.HPROF_GC_ROOT_STICKY_CLASS  -> "GC root (system class)";
             case HprofReader.HPROF_GC_ROOT_JNI_GLOBAL    -> "GC root (JNI global)";
             case HprofReader.HPROF_GC_ROOT_JNI_LOCAL     -> "GC root (JNI local)";
@@ -446,6 +528,7 @@ public final class QueryEngine {
         };
     }
 
+    /** Returns the name of the TYPE_OBJECT field at ordinal position {@code refPos} in the schema. */
     private static String objectFieldName(int classDenseId, int refPos, IndexRegistry registry)
             throws IOException {
         var schema = registry.loadFieldSchema(classDenseId);
@@ -474,14 +557,13 @@ public final class QueryEngine {
         int classDenseId = allObjs ? -1 : names.resolve(className);
         if (!allObjs && classDenseId < 0) return List.of();
 
-        var matching = new ArrayList<int[]>(); // [denseId, retainedHigh, retainedLow] — store as long pair
         var matchingLong = new ArrayList<long[]>(); // [denseId, retainedSize]
 
         try (var il       = registry.openInstanceList();
              var retained = registry.openRetainedSize()) {
 
             if (allObjs) {
-                for (int v = 0; v < objectCount; v++) {
+                for (int v = 1; v < objectCount; v++) {
                     long rs = retained.readLong(v);
                     if (matches(rs, op, threshold)) matchingLong.add(new long[]{v, rs});
                 }
@@ -541,7 +623,7 @@ public final class QueryEngine {
              var retained = registry.openRetainedSize()) {
 
             if (allObjs) {
-                for (int v = 0; v < objectCount; v++) {
+                for (int v = 1; v < objectCount; v++) {
                     long rs = retained.readLong(v);
                     acc = func.equals("SUM") ? acc + rs : Math.max(acc, rs);
                 }
@@ -649,7 +731,7 @@ public final class QueryEngine {
         BitSet bits     = new BitSet(objectCount);
 
         if (className.equals("*")) {
-            bits.set(0, objectCount);
+            bits.set(1, objectCount);  // dense ID 0 is null sentinel
             return bits;
         }
 
@@ -813,7 +895,10 @@ public final class QueryEngine {
         List<IndexRegistry.FieldDef> schema = registry.loadFieldSchema(classDenseId);
         IndexRegistry.FieldDef field = null;
         for (var fd : schema) {
-            if (fd.name().equals(fieldName)) { field = fd; break; }
+            if (fd.name().equals(fieldName) && fd.typeCode() != HprofReader.TYPE_OBJECT) {
+                field = fd;
+                break;
+            }
         }
         if (field == null)
             throw new IllegalArgumentException("Field '" + fieldName + "' not found in schema");
@@ -823,56 +908,69 @@ public final class QueryEngine {
         int typeCode   = field.typeCode();
         BitSet result  = new BitSet(heap.objectCount());
 
-        try (var il = registry.openInstanceList();
-             var fv = registry.openFieldValues(classDenseId)) {
+        try (var il            = registry.openInstanceList();
+             var isObjArrayFile = registry.openIsObjArray();
+             var fv            = registry.openFieldValues(classDenseId)) {
             long start = il.start(classDenseId);
             long end   = il.end(classDenseId);
             int  idx   = 0;
-            for (long e = start; e < end; e++, idx++) {
+            for (long e = start; e < end; e++) {
                 int denseId = il.edge(e);
-                if (!inputBits.get(denseId)) continue;
+                // Skip obj arrays — they don't have field-value records
+                if (isObjArrayFile != null && isObjArrayFile.readByteAt(denseId) != 0) continue;
+                if (!inputBits.get(denseId)) { idx++; continue; }
                 long val = readPrimitive(fv, (long) idx * recordSize + byteOff, typeCode);
+                idx++;
                 if (matchesOp(val, op, longValue)) result.set(denseId);
             }
         }
         return result;
     }
 
+    /**
+     * Returns a bitset keeping only objects from {@code inputBits} whose TYPE_OBJECT field
+     * {@code fieldName} points to a String whose value matches {@code targetValue}.
+     * Uses the field-value index for reliable null handling.
+     */
     public static BitSet buildWhereStringFilterBitSet(
             UnpackedHeap heap, IndexRegistry registry,
             BitSet inputBits, int classDenseId,
             String fieldName, String targetValue,
             boolean leadingStar, boolean trailingStar) throws IOException {
         List<IndexRegistry.FieldDef> schema = registry.loadFieldSchema(classDenseId);
-        int refPos = -1;
-        int objCount = 0;
+        IndexRegistry.FieldDef targetField = null;
         for (var fd : schema) {
-            if (fd.typeCode() == HprofReader.TYPE_OBJECT) {
-                if (fd.name().equals(fieldName)) { refPos = objCount; break; }
-                objCount++;
+            if (fd.typeCode() == HprofReader.TYPE_OBJECT && fd.name().equals(fieldName)) {
+                targetField = fd;
+                break;
             }
         }
-        if (refPos < 0)
+        if (targetField == null)
             throw new IllegalArgumentException("Object field '" + fieldName + "' not found in schema");
 
-        final int targetRefPos = refPos;
-        BitSet result = new BitSet(heap.objectCount());
+        int recordSize = IndexRegistry.fieldRecordSize(schema);
+        int byteOff    = targetField.byteOffset();
+        BitSet result  = new BitSet(heap.objectCount());
 
         if (!registry.hasPrimArrayIndex()) return result;
 
-        try (var il      = registry.openInstanceList();
-             var fwd     = registry.openForwardRefs();
-             var primOff = registry.openPrimArrayOffsets();
-             var primData= registry.openPrimArrayData()) {
+        try (var il            = registry.openInstanceList();
+             var isObjArrayFile = registry.openIsObjArray();
+             var fv            = registry.openFieldValues(classDenseId);
+             var fwd           = registry.openForwardRefs();
+             var primOff       = registry.openPrimArrayOffsets();
+             var primData      = registry.openPrimArrayData()) {
             long start = il.start(classDenseId);
             long end   = il.end(classDenseId);
+            int  idx   = 0;
             for (long e = start; e < end; e++) {
                 int denseId = il.edge(e);
-                if (!inputBits.get(denseId)) continue;
-                long fwdStart = fwd.start(denseId);
-                long fwdEnd   = fwd.end(denseId);
-                if (fwdStart + targetRefPos >= fwdEnd) continue;
-                int refDenseId = fwd.edge(fwdStart + targetRefPos);
+                // Skip obj arrays — they don't have field-value records
+                if (isObjArrayFile != null && isObjArrayFile.readByteAt(denseId) != 0) continue;
+                if (!inputBits.get(denseId)) { idx++; continue; }
+                int refDenseId = fv.readIntAt((long) idx * recordSize + byteOff);
+                idx++;
+                if (refDenseId == 0) continue;  // null field
                 String val = readStringContent(refDenseId, fwd, primOff, primData);
                 if (val != null && matchesString(val, targetValue, leadingStar, trailingStar))
                     result.set(denseId);
@@ -924,7 +1022,7 @@ public final class QueryEngine {
             case "All" -> {
                 int objectCount = heap.objectCount();
                 BitSet bits = new BitSet(objectCount);
-                bits.set(0, objectCount);
+                bits.set(1, objectCount);  // dense ID 0 is the null sentinel
                 yield bits;
             }
             case "GcRoots" -> {

@@ -240,7 +240,8 @@ class QueryEngineTest {
     @Test
     void aggregateCountStarReturnsTotalObjects() throws Exception {
         long count = QueryEngine.aggregateCount(knownHeap, knownReg, "*");
-        assertEquals(knownHeap.objectCount(), count, "ALL * count should equal objectCount");
+        // objectCount() includes null sentinel at dense ID 0; real objects = objectCount - 1
+        assertEquals(knownHeap.objectCount() - 1, count, "ALL * count should equal real object count");
     }
 
     @Test

@@ -102,9 +102,11 @@ class UnpackerTest {
         int objectCount = heap.objectCount();
         int[] classOf   = readIntArray(heap.indexDir().resolve("class-of.bin"), objectCount);
 
-        // Build a simple raw-id lookup (sorted rawIds → denseIds)
-        long[] sortedRawIds = readLongArray(heap.indexDir().resolve("raw-id-lookup-sorted.bin"), objectCount);
-        int[]  denseIds     = readIntArray( heap.indexDir().resolve("raw-id-lookup-dense.bin"),  objectCount);
+        // Build a simple raw-id lookup (sorted rawIds → denseIds).
+        // The ID map has objectCount-1 entries (null sentinel at dense ID 0 has no raw ID).
+        int realCount = objectCount - 1;
+        long[] sortedRawIds = readLongArray(heap.indexDir().resolve("raw-id-lookup-sorted.bin"), realCount);
+        int[]  denseIds     = readIntArray( heap.indexDir().resolve("raw-id-lookup-dense.bin"),  realCount);
 
         // Get class dense IDs by re-scanning the HPROF for class names
         long[] classDenseIds = findClassDenseIds(sortedRawIds, denseIds);

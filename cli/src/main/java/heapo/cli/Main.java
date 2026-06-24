@@ -285,8 +285,14 @@ public final class Main implements Runnable {
                                                    SessionDb sessionDb) throws IOException, SQLException {
             return switch (q) {
                 case DslParser.StatusQuery ignored ->
-                    "{\"objectCount\":" + heap.objectCount()
+                    // objectCount includes null sentinel at dense ID 0; display real count
+                    "{\"objectCount\":" + (heap.objectCount() - 1)
                         + ",\"classCount\":" + heap.classCount() + "}\n";
+
+                case DslParser.ReadQuery rq -> {
+                    String content = QueryEngine.readFull(heap, reg, rq.denseId());
+                    yield "{\"content\":" + jsonString(content) + "}\n";
+                }
 
                 case DslParser.ClassesQuery cq ->
                     JsonlFormatter.formatClasses(QueryEngine.classes(heap, reg, cq.glob()));
@@ -482,6 +488,12 @@ public final class Main implements Runnable {
                 ? "Error: '" + name + "' requires a session — use 'heapo open'"
                 : "Error: unknown name '" + name + "'");
             return null;
+        }
+
+        private static String jsonString(String s) {
+            if (s == null) return "null";
+            return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"")
+                           .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t") + "\"";
         }
 
         private static BitSet loadBitSet(Path path) throws IOException {

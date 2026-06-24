@@ -98,8 +98,14 @@ public final class HeapSession implements AutoCloseable {
             // Read-only DSL queries — recorded in history, no THAT side-effect
             case DslParser.StatusQuery ignored -> {
                 history.record(rawCmd, System.currentTimeMillis());
-                yield "{\"objectCount\":" + heap.objectCount()
+                // objectCount includes null sentinel at dense ID 0; display real count
+                yield "{\"objectCount\":" + (heap.objectCount() - 1)
                     + ",\"classCount\":" + heap.classCount() + "}\n";
+            }
+            case DslParser.ReadQuery rq -> {
+                history.record(rawCmd, System.currentTimeMillis());
+                String content = QueryEngine.readFull(heap, registry, rq.denseId());
+                yield "{\"content\":" + jsonString(content) + "}\n";
             }
             case DslParser.ClassesQuery cq -> {
                 history.record(rawCmd, System.currentTimeMillis());
@@ -556,6 +562,12 @@ public final class HeapSession implements AutoCloseable {
 
     private static String escJson(String s) {
         return s == null ? "" : s.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    private static String jsonString(String s) {
+        if (s == null) return "null";
+        return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"")
+                       .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t") + "\"";
     }
 
     @Override

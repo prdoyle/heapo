@@ -58,14 +58,17 @@ public final class Unpacker {
         new HprofReader(hprofFile).read(handler);
         handler.closeStreams();
 
-        int objectCount = handler.nextId;
+        // nextId started at 1, so objectCount = N+1 where N = real objects.
+        // Dense ID 0 is the null sentinel; real objects occupy 1..N.
+        int objectCount = handler.nextId;   // capacity (N+1)
+        int realCount   = objectCount - 1;  // actual object count (N)
         int classCount  = handler.classCount;
-        progress.accept(String.format("  %,d objects, %,d classes", objectCount, classCount));
+        progress.accept(String.format("  %,d objects, %,d classes", realCount, classCount));
 
-        // Sort id-map and split into parallel lookup arrays
+        // Sort id-map and split into parallel lookup arrays (realCount entries only)
         sortAndSplitIdMap(scratchIdMap, tempDir, indexDir);
-        long[] sortedRawIds = loadLongs(indexDir.resolve("raw-id-lookup-sorted.bin"), objectCount);
-        int[]  denseIds     = loadInts( indexDir.resolve("raw-id-lookup-dense.bin"),  objectCount);
+        long[] sortedRawIds = loadLongs(indexDir.resolve("raw-id-lookup-sorted.bin"), realCount);
+        int[]  denseIds     = loadInts( indexDir.resolve("raw-id-lookup-dense.bin"),  realCount);
 
         // Resolve and write remaining index files
         resolveClassOf(scratchClassOfRaw, indexDir.resolve("class-of.bin"),
@@ -77,10 +80,10 @@ public final class Unpacker {
         buildIsObjArray(handler.objArrayDenseIds, indexDir, objectCount);
         buildPrimArrayTypes(handler.primArrayElementTypes, indexDir, objectCount);
 
-        // Build field-value index: per-class primitive field files + schemas
+        // Build field-value index: per-class field files (TYPE_OBJECT + primitives) + schemas
         Path fieldsDir = outputDir.resolve("fields");
         Files.createDirectories(fieldsDir);
-        finaliseFieldValues(handler, fieldValuesTempDir, fieldsDir);
+        resolveAndWriteFieldValues(handler, fieldValuesTempDir, fieldsDir, sortedRawIds, denseIds);
         writeFieldSchemas(handler, fieldsDir);
         writeStaticFieldSchemas(handler, fieldsDir);
 
@@ -119,7 +122,8 @@ public final class Unpacker {
         final List<Integer>    objArrayDenseIds     = new ArrayList<>();
         final Map<Integer, Byte> primArrayElementTypes = new HashMap<>();
 
-        int nextId = 0;
+        // Dense ID 0 is reserved as the null sentinel. Real objects start at 1.
+        int nextId = 1;
         int classCount = 0;
 
         private final DataOutputStream idMapOut;
@@ -128,8 +132,9 @@ public final class Unpacker {
         private final DataOutputStream shallowSizeOut;
         private final DataOutputStream primArrayScratchOut;
 
-        // Per-class primitive field value streams: keyed by class dense ID.
-        // Written to fieldValuesTempDir; finalised post-scan.
+        // Per-class field value streams: keyed by class dense ID.
+        // Scratch records store TYPE_OBJECT as 8-byte raw IDs and primitives as-is.
+        // Resolved post-scan into final records with 4-byte dense IDs and native primitives.
         private final Path fieldValuesTempDir;
         final Map<Integer, DataOutputStream> fieldValueStreams = new LinkedHashMap<>();
 
@@ -142,6 +147,10 @@ public final class Unpacker {
             shallowSizeOut        = dataOut(shallowSizePath);
             primArrayScratchOut   = dataOut(primArrayScratch);
             this.fieldValuesTempDir = fieldValuesTempDir;
+
+            // Dense ID 0 = null sentinel — pre-write placeholder entries
+            classOfRawOut.writeLong(0L);  // classOf null = 0 (no class)
+            shallowSizeOut.writeInt(0);   // shallow size of null = 0
         }
 
         void closeStreams() throws IOException {
@@ -207,7 +216,7 @@ public final class Unpacker {
             classOfRawOut.writeLong(classObjectId);
             shallowSizeOut.writeInt(shallowShift(size));
             parseInstanceRefs(denseId, classObjectId, data);
-            writeFieldValues(classObjectId, data);
+            writeAllFields(classObjectId, data);
         }
 
         @Override
@@ -230,7 +239,7 @@ public final class Unpacker {
             int size    = 16 + numElements * HprofReader.primitiveTypeSize(elementType);
             primArrayElementTypes.put(denseId, (byte) elementType);
             emitIdMap(objectId, denseId);
-            classOfRawOut.writeLong(0L);
+            classOfRawOut.writeLong(0L);  // no class; classOf=0 (null sentinel) = unknown
             shallowSizeOut.writeInt(shallowShift(size));
             primArrayScratchOut.writeInt(denseId);
             primArrayScratchOut.writeInt(data.length);
@@ -296,21 +305,17 @@ public final class Unpacker {
             }
         }
 
-        private void writeFieldValues(long classObjectId, byte[] data) throws IOException {
-            byte[] primBytes = extractPrimitives(classObjectId, ByteBuffer.wrap(data));
-            if (primBytes.length == 0) return;
+        /**
+         * Writes all fields (TYPE_OBJECT as 8-byte raw IDs, primitives as-is) to a per-class
+         * scratch file. Post-scan, {@link #resolveAndWriteFieldValues} resolves TYPE_OBJECT
+         * raw IDs to 4-byte dense IDs and writes the final field-value files.
+         */
+        private void writeAllFields(long classObjectId, byte[] data) throws IOException {
             Integer classDenseId = classDenseIds.get(classObjectId);
             if (classDenseId == null) return;
-            DataOutputStream out = fieldValueStreams.get(classDenseId);
-            if (out == null) {
-                out = dataOut(fieldValuesTempDir.resolve(classDenseId + ".bin.tmp"));
-                fieldValueStreams.put(classDenseId, out);
-            }
-            out.write(primBytes);
-        }
 
-        private byte[] extractPrimitives(long classObjectId, ByteBuffer buf) {
-            var primBuf = new ByteArrayOutputStream();
+            ByteBuffer buf = ByteBuffer.wrap(data);
+            var scratch = new ByteArrayOutputStream();
             long curClass = classObjectId;
             while (curClass != 0 && buf.hasRemaining()) {
                 byte[] ftypes = classFields.get(curClass);
@@ -318,19 +323,37 @@ public final class Unpacker {
                 for (byte ftype : ftypes) {
                     int type = ftype & 0xFF;
                     int size = HprofReader.typeSize(type, idSize());
-                    if (buf.remaining() < size) return primBuf.toByteArray();
+                    if (buf.remaining() < size) return;
                     if (type == HprofReader.TYPE_OBJECT) {
-                        buf.position(buf.position() + size);
+                        // Store raw ID as 8 bytes (big-endian); resolved post-scan to 4-byte dense ID.
+                        long rawId = idSize() == 4
+                            ? Integer.toUnsignedLong(buf.getInt())
+                            : buf.getLong();
+                        scratch.write((int)(rawId >> 56));
+                        scratch.write((int)(rawId >> 48));
+                        scratch.write((int)(rawId >> 40));
+                        scratch.write((int)(rawId >> 32));
+                        scratch.write((int)(rawId >> 24));
+                        scratch.write((int)(rawId >> 16));
+                        scratch.write((int)(rawId >> 8));
+                        scratch.write((int)rawId);
                     } else {
                         byte[] val = new byte[size];
                         buf.get(val);
-                        primBuf.write(val, 0, val.length);
+                        scratch.write(val, 0, val.length);
                     }
                 }
                 Long superRaw = superClasses.get(curClass);
                 curClass = (superRaw != null && superRaw != 0) ? superRaw : 0;
             }
-            return primBuf.toByteArray();
+
+            if (scratch.size() == 0) return;
+            DataOutputStream out = fieldValueStreams.get(classDenseId);
+            if (out == null) {
+                out = dataOut(fieldValuesTempDir.resolve(classDenseId + ".bin.tmp"));
+                fieldValueStreams.put(classDenseId, out);
+            }
+            scratch.writeTo(out);
         }
 
         private static int shallowShift(long size) {
@@ -372,9 +395,10 @@ public final class Unpacker {
         try (var in  = dataIn(scratchClassOfRaw);
              var out = dataOut(classOfPath)) {
             for (int i = 0; i < objectCount; i++) {
-                long rawClassId  = in.readLong();
+                long rawClassId   = in.readLong();
                 int  classDenseId = resolveDenseId(rawClassId, sortedRawIds, denseIds);
-                out.writeInt(Math.max(classDenseId, 0));  // 0 = no class (primitive arrays, etc.)
+                // 0 = no class (null sentinel, primitive arrays, unresolvable refs)
+                out.writeInt(Math.max(classDenseId, 0));
             }
         }
     }
@@ -486,12 +510,78 @@ public final class Unpacker {
 
     // ── Post-scan: field values ───────────────────────────────────────────────
 
-    private static void finaliseFieldValues(ScanHandler handler, Path tempDir, Path fieldsDir)
+    /**
+     * Resolves scratch field-value files (TYPE_OBJECT as 8-byte raw IDs) into final files
+     * (TYPE_OBJECT as 4-byte dense IDs, 0 = null; primitives copied as-is).
+     */
+    private static void resolveAndWriteFieldValues(ScanHandler handler, Path tempDir, Path fieldsDir,
+                                                    long[] sortedRawIds, int[] denseIds)
             throws IOException {
+        Map<Integer, Long> denseToRaw = new HashMap<>();
+        for (var e : handler.classDenseIds.entrySet()) denseToRaw.put(e.getValue(), e.getKey());
+
         for (int classDenseId : handler.fieldValueStreams.keySet()) {
             Path src = tempDir.resolve(classDenseId + ".bin.tmp");
+            if (!Files.exists(src)) continue;
+            Long rawClassId = denseToRaw.get(classDenseId);
+            if (rawClassId == null) continue;
+
+            // Compute scratch and final record layouts for this class hierarchy
+            var fieldInfos = new ArrayList<int[]>();  // [scratchOffset, finalOffset, typeCode, scratchSize]
+            int scratchOff = 0, finalOff = 0;
+            long curClass = rawClassId;
+            while (curClass != 0) {
+                byte[] ftypes = handler.classFields.get(curClass);
+                if (ftypes == null) break;
+                for (byte ftype : ftypes) {
+                    int type = ftype & 0xFF;
+                    if (type == HprofReader.TYPE_OBJECT) {
+                        fieldInfos.add(new int[]{scratchOff, finalOff, type, 8});
+                        scratchOff += 8;
+                        finalOff   += 4;
+                    } else {
+                        int sz = HprofReader.primitiveTypeSize(type);
+                        fieldInfos.add(new int[]{scratchOff, finalOff, type, sz});
+                        scratchOff += sz;
+                        finalOff   += sz;
+                    }
+                }
+                Long superRaw = handler.superClasses.get(curClass);
+                curClass = (superRaw != null && superRaw != 0) ? superRaw : 0;
+            }
+            if (fieldInfos.isEmpty()) continue;
+
+            int scratchRecordSize = scratchOff;
+            int finalRecordSize   = finalOff;
+            long numInstances     = Files.size(src) / scratchRecordSize;
+
+            byte[] scratchBuf = new byte[scratchRecordSize];
+            byte[] finalBuf   = new byte[finalRecordSize];
             Path dst = fieldsDir.resolve(classDenseId + ".bin");
-            if (Files.exists(src)) Files.move(src, dst, StandardCopyOption.REPLACE_EXISTING);
+
+            try (var in  = dataIn(src);
+                 var out = dataOut(dst)) {
+                for (long i = 0; i < numInstances; i++) {
+                    in.readFully(scratchBuf);
+                    for (int[] fi : fieldInfos) {
+                        int sOff = fi[0], fOff = fi[1], type = fi[2], sz = fi[3];
+                        if (type == HprofReader.TYPE_OBJECT) {
+                            long rawId = 0;
+                            for (int j = 0; j < 8; j++) rawId = (rawId << 8) | (scratchBuf[sOff + j] & 0xFF);
+                            int densId = (rawId == 0) ? 0 : resolveDenseId(rawId, sortedRawIds, denseIds);
+                            if (densId < 0) densId = 0;  // unresolvable → null sentinel
+                            finalBuf[fOff]     = (byte)(densId >> 24);
+                            finalBuf[fOff + 1] = (byte)(densId >> 16);
+                            finalBuf[fOff + 2] = (byte)(densId >> 8);
+                            finalBuf[fOff + 3] = (byte)densId;
+                        } else {
+                            System.arraycopy(scratchBuf, sOff, finalBuf, fOff, sz);
+                        }
+                    }
+                    out.write(finalBuf);
+                }
+            }
+            Files.delete(src);
         }
     }
 
