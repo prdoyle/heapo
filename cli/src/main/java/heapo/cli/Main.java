@@ -109,8 +109,8 @@ public final class Main implements Runnable {
         """;
 
     static java.util.function.Consumer<String> timedProgress() {
-        long start = System.nanoTime();
-        return msg -> System.err.printf("[%5.1fs] %s%n", (System.nanoTime() - start) / 1e9, msg);
+        long start = System.currentTimeMillis();
+        return msg -> System.err.printf("[%5.1fs] %s%n", (System.currentTimeMillis() - start) / 1e3, msg);
     }
 
     static Path resolveOutDir(Path hprofFile, Path heapDir) {
