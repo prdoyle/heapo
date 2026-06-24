@@ -38,12 +38,12 @@ public final class Unpacker {
         }
 
         long hprofBytes = Files.size(hprofFile);
-        progress.accept(String.format("Pre-scanning heap dump (%.1f MB)...", hprofBytes / 1_048_576.0));
+        progress.accept(String.format("Collecting class and field names (%.1f MB)...", hprofBytes / 1_048_576.0));
         var collector = new StringIdCollector();
         new HprofReader(hprofFile).read(collector);
         long[] neededStringIds = collector.build();
 
-        progress.accept(String.format("Scanning heap dump (%,d class/field string IDs)...", neededStringIds.length));
+        progress.accept(String.format("Scanning heap dump (%.1f MB)...", hprofBytes / 1_048_576.0));
 
         Path indexDir  = outputDir.resolve("indexes");
         Path bitsetDir = outputDir.resolve("bitsets");
