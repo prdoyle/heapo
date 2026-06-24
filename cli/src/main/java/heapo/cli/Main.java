@@ -108,9 +108,16 @@ public final class Main implements Runnable {
         exit / quit / Ctrl-D    leave the REPL
         """;
 
-    static java.util.function.Consumer<String> timedProgress() {
-        long start = System.currentTimeMillis();
-        return msg -> System.err.printf("[%5.1fs] %s%n", (System.currentTimeMillis() - start) / 1e3, msg);
+    static final class ProgressReporter implements java.util.function.Consumer<String> {
+        private final long start = System.currentTimeMillis();
+        private boolean active = false;
+
+        @Override public void accept(String msg) {
+            active = true;
+            System.err.printf("[%5.1fs] %s%n", (System.currentTimeMillis() - start) / 1e3, msg);
+        }
+
+        void done() { if (active) accept("Done."); }
     }
 
     static Path resolveOutDir(Path hprofFile, Path heapDir) {
@@ -155,7 +162,7 @@ public final class Main implements Runnable {
             Path outDir = resolveOutDir(hprofFile, heapDir);
             Files.createDirectories(outDir);
 
-            var progress = timedProgress();
+            var progress = new ProgressReporter();
             UnpackedHeap heap = Unpacker.unpack(hprofFile, outDir, progress);
             var reg = new IndexRegistry(heap);
             reg.buildAll(progress);
@@ -540,7 +547,7 @@ public final class Main implements Runnable {
             Path outDir = resolveOutDir(hprofFile, heapDir);
             Files.createDirectories(outDir);
 
-            var progress = timedProgress();
+            var progress = new ProgressReporter();
             UnpackedHeap heap = Unpacker.unpack(hprofFile, outDir, progress);
             var reg = new IndexRegistry(heap);
             reg.buildAll(progress);
