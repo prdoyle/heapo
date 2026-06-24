@@ -19,4 +19,5 @@ dependencies {
     implementation(project(":session"))
     implementation("info.picocli:picocli:4.7.6")
     implementation("org.jline:jline:3.27.1")
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.18.2")
 }

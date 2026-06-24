@@ -78,6 +78,7 @@ public final class DslParser {
     public record ClassesQuery(String glob)                  implements Query {}  // null = all
     public record ExplainQuery(int denseId)                  implements Query {}
     public record InspectQuery(int denseId)                  implements Query {}
+    public record ReadQuery(int denseId)                     implements Query {}
 
     // Session commands
     public record NamesQuery(String glob)                    implements Query {}  // null = all
@@ -97,7 +98,7 @@ public final class DslParser {
     private static final List<String> TOP_LEVEL = List.of(
         "ALL", "CLASS", "THAT", "TOP", "SHOW",
         "GcRoots", "Threads", "ClassLoaders", "SoftReferences", "WeakReferences", "PhantomReferences",
-        "STATUS", "CLASSES", "NAMES", "EXPLAIN", "INSPECT",
+        "STATUS", "CLASSES", "NAMES", "EXPLAIN", "INSPECT", "READ",
         "HISTORY", "CALL", "FORGET", "UNDO"
     );
 
@@ -145,6 +146,7 @@ public final class DslParser {
             case "NAMES"   -> parseNames(t, 1);
             case "EXPLAIN" -> parseExplain(t, 1);
             case "INSPECT" -> parseInspect(t, 1);
+            case "READ"    -> parseRead(t, 1);
             case "HISTORY" -> parseHistory(t, 1);
             case "CALL"    -> parseCall(t, 1);
             case "FORGET"  -> parseForget(t, 1);
@@ -375,6 +377,14 @@ public final class DslParser {
         int denseId = Integer.parseInt(t[i].substring(1));
         if (i + 1 < t.length) return invalid("Unexpected tokens after INSPECT " + t[i]);
         return complete(new InspectQuery(denseId), List.of());
+    }
+
+    private static ParseResult parseRead(String[] t, int i) {
+        if (i >= t.length) return incomplete(List.of("i<n>"));
+        if (!isObjRef(t[i])) return invalid("Expected i<n> after READ, got: " + t[i]);
+        int denseId = Integer.parseInt(t[i].substring(1));
+        if (i + 1 < t.length) return invalid("Unexpected tokens after READ " + t[i]);
+        return complete(new ReadQuery(denseId), List.of());
     }
 
     // ── Session commands ──────────────────────────────────────────────────────

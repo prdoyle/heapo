@@ -1,5 +1,8 @@
 package heapo.cli;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import heapo.indexes.IndexRegistry;
 import heapo.model.*;
 import heapo.query_engine.*;
@@ -35,6 +38,7 @@ public final class HeapSession implements AutoCloseable {
     private int thatHistId = -1;
 
     private static final int IMPLICIT_DISPLAY_N = 10;
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     public HeapSession(UnpackedHeap heap, IndexRegistry registry, Path dbPath)
             throws SQLException {
@@ -45,6 +49,20 @@ public final class HeapSession implements AutoCloseable {
         this.names    = db.names();
         this.tables   = db.tables();
         this.sql      = db.sql();
+    }
+
+    // ── JSON helpers ──────────────────────────────────────────────────────────
+
+    private static String toJsonLine(JsonNode node) {
+        try {
+            return MAPPER.writeValueAsString(node) + "\n";
+        } catch (JsonProcessingException e) {
+            throw new AssertionError("unreachable", e);
+        }
+    }
+
+    private static String errorJson(String message) {
+        return toJsonLine(MAPPER.createObjectNode().put("error", message));
     }
 
     // ── Command dispatch ──────────────────────────────────────────────────────
@@ -60,10 +78,9 @@ public final class HeapSession implements AutoCloseable {
 
         return switch (DslParser.parse(trimmed)) {
             case DslParser.Invalid e ->
-                "{\"error\":\"" + escJson(e.message()) + "\"}\n";
+                errorJson(e.message());
             case DslParser.Incomplete i ->
-                "{\"error\":\"" + escJson("Incomplete command; expected: "
-                    + String.join(", ", i.completions())) + "\"}\n";
+                errorJson("Incomplete command; expected: " + String.join(", ", i.completions()));
             case DslParser.Complete c ->
                 handleComplete(c.action(), trimmed);
         };
@@ -99,13 +116,14 @@ public final class HeapSession implements AutoCloseable {
             case DslParser.StatusQuery ignored -> {
                 history.record(rawCmd, System.currentTimeMillis());
                 // objectCount includes null sentinel at dense ID 0; display real count
-                yield "{\"objectCount\":" + (heap.objectCount() - 1)
-                    + ",\"classCount\":" + heap.classCount() + "}\n";
+                yield toJsonLine(MAPPER.createObjectNode()
+                    .put("objectCount", heap.objectCount() - 1)
+                    .put("classCount", heap.classCount()));
             }
             case DslParser.ReadQuery rq -> {
                 history.record(rawCmd, System.currentTimeMillis());
                 String content = QueryEngine.readFull(heap, registry, rq.denseId());
-                yield "{\"content\":" + jsonString(content) + "}\n";
+                yield JsonlFormatter.formatRead(rq.denseId(), content);
             }
             case DslParser.ClassesQuery cq -> {
                 history.record(rawCmd, System.currentTimeMillis());
@@ -141,11 +159,17 @@ public final class HeapSession implements AutoCloseable {
         var sb = new StringBuilder();
         for (var e : all.entrySet()) {
             if (glob == null || matchGlob(e.getKey(), glob)) {
-                sb.append("{\"name\":\"").append(escJson(e.getKey()))
-                  .append("\",\"historyId\":").append(e.getValue()).append("}\n");
+                sb.append(toJsonLine(MAPPER.createObjectNode()
+                    .put("name", e.getKey())
+                    .put("historyId", e.getValue())));
             }
         }
-        return sb.isEmpty() ? "{\"names\":[]}\n" : sb.toString();
+        if (sb.isEmpty()) {
+            var node = MAPPER.createObjectNode();
+            node.putArray("names");
+            return toJsonLine(node);
+        }
+        return sb.toString();
     }
 
     private String handleExplainName(String name) throws SQLException {
@@ -153,49 +177,49 @@ public final class HeapSession implements AutoCloseable {
         if (histId < 0) {
             var histIdOpt = names.resolve(name);
             if (histIdOpt.isEmpty())
-                return "{\"error\":\"Unknown name: '" + escJson(name) + "'\"}\n";
+                return errorJson("Unknown name: '" + name + "'");
             histId = histIdOpt.get();
         }
         var entryOpt = history.findById(histId);
         if (entryOpt.isEmpty())
-            return "{\"error\":\"History h" + histId + " not found\"}\n";
+            return errorJson("History h" + histId + " not found");
         var entry = entryOpt.get();
         String type = entry.bitsetFile() != null ? "bitset"
                     : entry.sqlTable() != null   ? "table"
                     : "other";
-        var sb = new StringBuilder();
-        sb.append("{\"name\":\"").append(escJson(name)).append('"')
-          .append(",\"histId\":\"h").append(histId).append('"')
-          .append(",\"type\":\"").append(type).append('"')
-          .append(",\"command\":\"").append(escJson(entry.command())).append('"');
-        if (entry.input1() != null) sb.append(",\"derivedFrom\":\"h").append(entry.input1()).append('"');
-        sb.append("}\n");
-        return sb.toString();
+        var node = MAPPER.createObjectNode()
+            .put("name", name)
+            .put("histId", "h" + histId)
+            .put("type", type)
+            .put("command", entry.command());
+        if (entry.input1() != null) node.put("derivedFrom", "h" + entry.input1());
+        return toJsonLine(node);
     }
 
     private String handleThat() throws IOException {
-        if (that instanceof VoidAnswer)    return "{\"error\":\"THAT is empty\"}\n";
+        if (that instanceof VoidAnswer)    return errorJson("THAT is empty");
         if (that instanceof BitSetAnswer b) return displayBitSet(b.bits());
         if (that instanceof TableAnswer t)  return sql.selectAsJsonl(t.sqlTableName());
-        return "{\"error\":\"cannot display THAT\"}\n";
+        return errorJson("cannot display THAT");
     }
 
     private String handleHistory(int limit) {
         var entries = history.recent(limit);
         var sb = new StringBuilder();
         for (var e : entries) {
-            sb.append("{\"id\":\"h").append(e.id()).append('"')
-              .append(",\"command\":\"").append(escJson(e.command())).append('"')
-              .append(",\"timestamp\":").append(e.timestamp());
-            if (e.input1() != null) sb.append(",\"input1\":\"h").append(e.input1()).append('"');
-            if (e.input2() != null) sb.append(",\"input2\":\"h").append(e.input2()).append('"');
-            sb.append("}\n");
+            var node = MAPPER.createObjectNode()
+                .put("id", "h" + e.id())
+                .put("command", e.command())
+                .put("timestamp", e.timestamp());
+            if (e.input1() != null) node.put("input1", "h" + e.input1());
+            if (e.input2() != null) node.put("input2", "h" + e.input2());
+            sb.append(toJsonLine(node));
         }
         return sb.toString();
     }
 
     private String handleCallThat(String name, String rawCmd) throws IOException, SQLException {
-        if (that instanceof VoidAnswer) return "{\"error\":\"THAT is empty\"}\n";
+        if (that instanceof VoidAnswer) return errorJson("THAT is empty");
 
         int histId = thatHistId;
 
@@ -209,14 +233,18 @@ public final class HeapSession implements AutoCloseable {
         var displaced = names.bind(name, histId);
         int callId    = history.record(rawCmd, System.currentTimeMillis());
         history.setInputs(callId, histId, displaced.orElse(null));
-        return "{\"bound\":\"" + escJson(name) + "\",\"historyId\":" + histId + "}\n";
+        return toJsonLine(MAPPER.createObjectNode()
+            .put("bound", name)
+            .put("historyId", histId));
     }
 
     private String handleCallById(int targetId, String name, String rawCmd) throws SQLException {
         var displaced = names.bind(name, targetId);
         int callId    = history.record(rawCmd, System.currentTimeMillis());
         history.setInputs(callId, targetId, displaced.orElse(null));
-        return "{\"bound\":\"" + escJson(name) + "\",\"historyId\":" + targetId + "}\n";
+        return toJsonLine(MAPPER.createObjectNode()
+            .put("bound", name)
+            .put("historyId", targetId));
     }
 
     private String handleForget(String name, String rawCmd) throws SQLException {
@@ -224,12 +252,12 @@ public final class HeapSession implements AutoCloseable {
         names.forget(name);
         int forgetId = history.record(rawCmd, System.currentTimeMillis());
         if (oldHistId != null) history.setInputs(forgetId, oldHistId, null);
-        return "{\"forgot\":\"" + escJson(name) + "\"}\n";
+        return toJsonLine(MAPPER.createObjectNode().put("forgot", name));
     }
 
     private String handleRecall(int histId) throws IOException, SQLException {
         var entry = history.findById(histId);
-        if (entry.isEmpty()) return "{\"error\":\"No history entry h" + histId + "\"}\n";
+        if (entry.isEmpty()) return errorJson("No history entry h" + histId);
         if (entry.get().sqlTable()   != null) return sql.selectAsJsonl(entry.get().sqlTable());
         if (entry.get().bitsetFile() != null) return displayBitSet(loadBitSetFromFile(entry.get().bitsetFile()));
         return handleComplete(DslParser.parse(entry.get().command()) instanceof DslParser.Complete c
@@ -238,7 +266,7 @@ public final class HeapSession implements AutoCloseable {
 
     private String handleUndo() throws SQLException {
         var entry = history.lastUndoable();
-        if (entry.isEmpty()) return "{\"error\":\"nothing to undo\"}\n";
+        if (entry.isEmpty()) return errorJson("nothing to undo");
 
         String cmd   = entry.get().command();
         int undoId   = history.record("UNDO", System.currentTimeMillis());
@@ -249,31 +277,32 @@ public final class HeapSession implements AutoCloseable {
                 Integer displaced = entry.get().input2();
                 if (displaced != null) names.bind(ct.name(), displaced);
                 history.setInputs(undoId, entry.get().id(), null);
-                String msg = displaced != null
-                    ? "{\"undone\":\"CALL\",\"name\":\"" + escJson(ct.name()) + "\",\"restored\":" + displaced + "}"
-                    : "{\"undone\":\"CALL\",\"name\":\"" + escJson(ct.name()) + "\"}";
-                return msg + "\n";
+                var node = MAPPER.createObjectNode().put("undone", "CALL").put("name", ct.name());
+                if (displaced != null) node.put("restored", displaced.intValue());
+                return toJsonLine(node);
             }
             if (c.action() instanceof DslParser.CallByIdQuery cb) {
                 names.forget(cb.name());
                 Integer displaced = entry.get().input2();
                 if (displaced != null) names.bind(cb.name(), displaced);
                 history.setInputs(undoId, entry.get().id(), null);
-                String msg = displaced != null
-                    ? "{\"undone\":\"CALL\",\"name\":\"" + escJson(cb.name()) + "\",\"restored\":" + displaced + "}"
-                    : "{\"undone\":\"CALL\",\"name\":\"" + escJson(cb.name()) + "\"}";
-                return msg + "\n";
+                var node = MAPPER.createObjectNode().put("undone", "CALL").put("name", cb.name());
+                if (displaced != null) node.put("restored", displaced.intValue());
+                return toJsonLine(node);
             }
             if (c.action() instanceof DslParser.ForgetQuery fq) {
                 Integer oldHistId = entry.get().input1();
-                if (oldHistId == null) return "{\"error\":\"cannot undo FORGET: old binding not recorded\"}\n";
+                if (oldHistId == null) return errorJson("cannot undo FORGET: old binding not recorded");
                 names.bind(fq.name(), oldHistId);
                 history.setInputs(undoId, entry.get().id(), null);
-                return "{\"undone\":\"FORGET\",\"name\":\"" + escJson(fq.name()) + "\",\"restored\":" + oldHistId + "}\n";
+                return toJsonLine(MAPPER.createObjectNode()
+                    .put("undone", "FORGET")
+                    .put("name", fq.name())
+                    .put("restored", oldHistId.intValue()));
             }
         }
 
-        return "{\"error\":\"last undoable command was not a CALL or FORGET\"}\n";
+        return errorJson("last undoable command was not a CALL or FORGET");
     }
 
     private String handleSql(String cmd) {
@@ -283,10 +312,11 @@ public final class HeapSession implements AutoCloseable {
             history.setSqlTable(histId, answer.sqlTableName());
             that = answer;
             thatHistId = histId;
-            return "{\"sqlTable\":\"" + escJson(answer.sqlTableName())
-                + "\",\"rowCount\":" + answer.rowCount() + "}\n";
+            return toJsonLine(MAPPER.createObjectNode()
+                .put("sqlTable", answer.sqlTableName())
+                .put("rowCount", answer.rowCount()));
         } catch (Exception e) {
-            return "{\"error\":\"" + escJson(e.getMessage()) + "\"}\n";
+            return errorJson(e.getMessage());
         }
     }
 
@@ -521,7 +551,7 @@ public final class HeapSession implements AutoCloseable {
             }
             case DslParser.AggregateCountTerminal ignored -> {
                 long count = bits.cardinality();
-                yield "{\"count\":" + count + "}\n";
+                yield toJsonLine(MAPPER.createObjectNode().put("count", count));
             }
             case DslParser.AggregateRetainedSizeTerminal t -> {
                 long value = QueryEngine.aggregateFromBitSet(heap, registry, bits, t.func());
@@ -558,16 +588,6 @@ public final class HeapSession implements AutoCloseable {
 
     private static boolean matchGlob(String name, String glob) {
         return name.matches(glob.replace(".", "\\.").replace("*", ".*"));
-    }
-
-    private static String escJson(String s) {
-        return s == null ? "" : s.replace("\\", "\\\\").replace("\"", "\\\"");
-    }
-
-    private static String jsonString(String s) {
-        if (s == null) return "null";
-        return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"")
-                       .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t") + "\"";
     }
 
     @Override

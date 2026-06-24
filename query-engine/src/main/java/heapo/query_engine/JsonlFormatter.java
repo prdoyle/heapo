@@ -1,7 +1,11 @@
 package heapo.query_engine;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import heapo.model.*;
 
+import java.io.IOException;
+import java.util.LinkedHashMap;
 import java.util.List;
 
 /** Renders query results as JSONL (one JSON object per line). */
@@ -9,101 +13,93 @@ public final class JsonlFormatter {
 
     private JsonlFormatter() {}
 
-    public static String formatTopN(List<TopNRow> rows) {
+    static final ObjectMapper MAPPER = new ObjectMapper()
+        .setSerializationInclusion(JsonInclude.Include.NON_NULL);
+
+    // ── Output shape records ──────────────────────────────────────────────────
+
+    private record TopNJson(int rank, String id, String type,
+                            long retainedSize, long shallowSize, String description) {}
+
+    private record CountJson(String className, long count) {}
+
+    private record ClassJson(String id, String className, long instanceCount) {}
+
+    private record ExplainJson(int depth, String id, String type, String field,
+                               long retainedSize, String description, String notes) {}
+
+    private record AggregateJson(String className, String func, long retainedSize) {}
+
+    private record ReadJson(String id, String content) {}
+
+    // ── Public format methods ─────────────────────────────────────────────────
+
+    public static String formatTopN(List<TopNRow> rows) throws IOException {
         var sb = new StringBuilder();
         for (var row : rows) {
-            sb.append("{\"rank\":").append(row.rank())
-              .append(",\"id\":\"i").append(row.denseId()).append('"')
-              .append(",\"type\":\"").append(esc(row.className())).append('"')
-              .append(",\"retainedSize\":").append(row.retainedSize())
-              .append(",\"shallowSize\":").append(row.shallowSize());
-            if (row.description() != null) {
-                sb.append(",\"description\":\"").append(descEsc(row.description())).append('"');
-            }
-            sb.append("}\n");
+            sb.append(MAPPER.writeValueAsString(new TopNJson(
+                row.rank(), "i" + row.denseId(), row.className(),
+                row.retainedSize(), row.shallowSize(), row.description())));
+            sb.append('\n');
         }
         return sb.toString();
     }
 
-    public static String formatCount(String className, long count) {
-        return "{\"className\":\"" + esc(className) + "\",\"count\":" + count + "}\n";
+    public static String formatCount(String className, long count) throws IOException {
+        return MAPPER.writeValueAsString(new CountJson(className, count)) + "\n";
     }
 
-    public static String formatClasses(List<ClassInfo> classes) {
+    public static String formatClasses(List<ClassInfo> classes) throws IOException {
         var sb = new StringBuilder();
         for (var c : classes) {
-            sb.append("{\"id\":\"i").append(c.denseId()).append('"')
-              .append(",\"className\":\"").append(esc(c.className())).append('"')
-              .append(",\"instanceCount\":").append(c.instanceCount())
-              .append("}\n");
+            sb.append(MAPPER.writeValueAsString(new ClassJson(
+                "i" + c.denseId(), c.className(), c.instanceCount())));
+            sb.append('\n');
         }
         return sb.toString();
     }
 
-    public static String formatExplain(List<ExplainNode> path) {
+    public static String formatExplain(List<ExplainNode> path) throws IOException {
         var sb = new StringBuilder();
         for (var node : path) {
-            sb.append("{\"depth\":").append(node.depth())
-              .append(",\"id\":\"i").append(node.denseId()).append('"')
-              .append(",\"type\":\"").append(esc(node.className())).append('"')
-              .append(",\"field\":\"").append(node.field() != null ? esc(node.field()) : "").append('"')
-              .append(",\"retainedSize\":").append(node.retainedSize());
-            if (node.description() != null)
-                sb.append(",\"description\":\"").append(esc(node.description())).append('"');
-            if (node.notes() != null)
-                sb.append(",\"notes\":\"").append(esc(node.notes())).append('"');
-            sb.append("}\n");
+            sb.append(MAPPER.writeValueAsString(new ExplainJson(
+                node.depth(), "i" + node.denseId(), node.className(),
+                node.field() != null ? node.field() : "",
+                node.retainedSize(), node.description(), node.notes())));
+            sb.append('\n');
         }
         return sb.toString();
     }
 
-    public static String formatAggregateRetainedSize(String className, String func, long value) {
-        return "{\"className\":\"" + esc(className) + "\",\"func\":\"" + func
-            + "\",\"retainedSize\":" + value + "}\n";
+    public static String formatAggregateRetainedSize(String className, String func, long value)
+            throws IOException {
+        return MAPPER.writeValueAsString(new AggregateJson(className, func, value)) + "\n";
     }
 
-    public static String formatInspect(List<FieldRow> rows) {
+    public static String formatInspect(List<FieldRow> rows) throws IOException {
         var sb = new StringBuilder();
         for (var r : rows) {
-            sb.append("{\"field\":\"").append(esc(r.fieldName())).append('"');
+            var m = new LinkedHashMap<String, Object>();
+            m.put("field", r.fieldName());
             if (r.isNullRef()) {
-                sb.append(",\"id\":\"null\"");
+                m.put("id", "null");
             } else if (r.isObject()) {
-                sb.append(",\"id\":\"i").append(r.refDenseId()).append('"')
-                  .append(",\"type\":\"").append(esc(r.className())).append('"')
-                  .append(",\"retainedSize\":").append(r.retainedSize())
-                  .append(",\"shallowSize\":").append(r.shallowSize());
-                if (r.description() != null)
-                    sb.append(",\"description\":\"").append(descEsc(r.description())).append('"');
+                m.put("id", "i" + r.refDenseId());
+                m.put("type", r.className());
+                m.put("retainedSize", r.retainedSize());
+                m.put("shallowSize", r.shallowSize());
+                if (r.description() != null) m.put("description", r.description());
             } else if (r.isPrimitive()) {
-                sb.append(",\"type\":\"").append(esc(r.primType())).append('"')
-                  .append(",\"description\":\"").append(descEsc(r.description() != null ? r.description() : "")).append('"');
+                m.put("type", r.primType());
+                m.put("description", r.description() != null ? r.description() : "");
             }
-            sb.append("}\n");
+            sb.append(MAPPER.writeValueAsString(m));
+            sb.append('\n');
         }
         return sb.toString();
     }
 
-    private static String esc(String s) {
-        return s.replace("\\", "\\\\").replace("\"", "\\\"");
-    }
-
-    private static String descEsc(String s) {
-        var sb = new StringBuilder(s.length() + 8);
-        for (int i = 0; i < s.length(); i++) {
-            char c = s.charAt(i);
-            switch (c) {
-                case '"'  -> sb.append("\\\"");
-                case '\\' -> sb.append("\\\\");
-                case '\n' -> sb.append("\\n");
-                case '\r' -> sb.append("\\r");
-                case '\t' -> sb.append("\\t");
-                case '\b' -> sb.append("\\b");
-                case '\f' -> sb.append("\\f");
-                default   -> { if (c < 0x20) sb.append(String.format("\\u%04x", (int) c));
-                               else sb.append(c); }
-            }
-        }
-        return sb.toString();
+    public static String formatRead(int denseId, String content) throws IOException {
+        return MAPPER.writeValueAsString(new ReadJson("i" + denseId, content)) + "\n";
     }
 }

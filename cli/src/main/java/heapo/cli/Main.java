@@ -1,5 +1,8 @@
 package heapo.cli;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import heapo.indexes.IndexRegistry;
 import heapo.query_engine.*;
 import heapo.session.SessionDb;
@@ -279,6 +282,16 @@ public final class Main implements Runnable {
             return 0;
         }
 
+        private static final ObjectMapper MAPPER = new ObjectMapper();
+
+        private static String toJsonLine(JsonNode node) {
+            try {
+                return MAPPER.writeValueAsString(node) + "\n";
+            } catch (JsonProcessingException e) {
+                throw new AssertionError("unreachable", e);
+            }
+        }
+
         private static String executeQueryCommand(DslParser.Query q,
                                                    UnpackedHeap heap,
                                                    IndexRegistry reg,
@@ -286,12 +299,13 @@ public final class Main implements Runnable {
             return switch (q) {
                 case DslParser.StatusQuery ignored ->
                     // objectCount includes null sentinel at dense ID 0; display real count
-                    "{\"objectCount\":" + (heap.objectCount() - 1)
-                        + ",\"classCount\":" + heap.classCount() + "}\n";
+                    toJsonLine(MAPPER.createObjectNode()
+                        .put("objectCount", heap.objectCount() - 1)
+                        .put("classCount", heap.classCount()));
 
                 case DslParser.ReadQuery rq -> {
                     String content = QueryEngine.readFull(heap, reg, rq.denseId());
-                    yield "{\"content\":" + jsonString(content) + "}\n";
+                    yield JsonlFormatter.formatRead(rq.denseId(), content);
                 }
 
                 case DslParser.ClassesQuery cq ->
@@ -446,7 +460,7 @@ public final class Main implements Runnable {
                 case DslParser.SampleNTerminal t ->
                     JsonlFormatter.formatTopN(QueryEngine.sampleFromBitSet(heap, reg, b, t.n()));
                 case DslParser.AggregateCountTerminal ignored ->
-                    "{\"count\":" + b.cardinality() + "}\n";
+                    toJsonLine(MAPPER.createObjectNode().put("count", b.cardinality()));
                 case DslParser.AggregateRetainedSizeTerminal t ->
                     JsonlFormatter.formatAggregateRetainedSize("(pipeline)", t.func(),
                         QueryEngine.aggregateFromBitSet(heap, reg, b, t.func()));
@@ -488,12 +502,6 @@ public final class Main implements Runnable {
                 ? "Error: '" + name + "' requires a session — use 'heapo open'"
                 : "Error: unknown name '" + name + "'");
             return null;
-        }
-
-        private static String jsonString(String s) {
-            if (s == null) return "null";
-            return "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"")
-                           .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t") + "\"";
         }
 
         private static BitSet loadBitSet(Path path) throws IOException {
