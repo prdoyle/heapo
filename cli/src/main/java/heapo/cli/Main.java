@@ -159,6 +159,7 @@ public final class Main implements Runnable {
             UnpackedHeap heap = Unpacker.unpack(hprofFile, outDir, progress);
             var reg = new IndexRegistry(heap);
             reg.buildAll(progress);
+            progress.accept("Done.");
 
             Path dbPath = outDir.resolve("sql.db");
             try (var terminal = TerminalBuilder.builder().build();
@@ -543,6 +544,7 @@ public final class Main implements Runnable {
             UnpackedHeap heap = Unpacker.unpack(hprofFile, outDir, progress);
             var reg = new IndexRegistry(heap);
             reg.buildAll(progress);
+            progress.accept("Done.");
 
             System.out.println("Indexes built: " + outDir.toAbsolutePath());
             return 0;
