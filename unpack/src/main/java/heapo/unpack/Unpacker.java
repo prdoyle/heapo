@@ -68,27 +68,32 @@ public final class Unpacker {
         int classCount  = handler.classCount;
         progress.accept(String.format("  %,d objects, %,d classes", realCount, classCount));
 
-        // Sort id-map and split into parallel mmap'd lookup files (realCount entries only)
+        progress.accept("  Sorting ID map...");
         sortAndSplitIdMap(scratchIdMap, tempDir, indexDir);
         try (var sortedRawIds = IndexFile.openRead(indexDir.resolve("raw-id-lookup-sorted.bin"));
              var denseIds     = IndexFile.openRead(indexDir.resolve("raw-id-lookup-dense.bin"))) {
 
-            // Resolve and write remaining index files
+            progress.accept("  Resolving class-of...");
             resolveClassOf(scratchClassOfRaw, indexDir.resolve("class-of.bin"),
                            sortedRawIds, denseIds, objectCount);
+            progress.accept("  Building forward refs...");
             buildForwardRefs(scratchEdges, tempDir, indexDir, sortedRawIds, denseIds, objectCount);
+            progress.accept("  Building super-class-of...");
             buildSuperClassOf(handler.superClasses, indexDir, sortedRawIds, denseIds, objectCount);
+            progress.accept("  Building GC roots...");
             buildGcRoots(handler.gcRootRawIds, handler.gcRootTypes, indexDir,
                          sortedRawIds, denseIds, objectCount);
+            progress.accept("  Building array type indexes...");
             buildIsObjArray(scratchObjArrays, indexDir, objectCount);
             buildPrimArrayTypes(scratchPrimArrayTypes, indexDir, objectCount);
 
-            // Build field-value index: per-class field files (TYPE_OBJECT + primitives) + schemas
+            progress.accept("  Building field value index...");
             Path fieldsDir = outputDir.resolve("fields");
             Files.createDirectories(fieldsDir);
             resolveAndWriteFieldValues(handler, fieldValuesTempDir, fieldsDir, sortedRawIds, denseIds);
             writeStaticFieldSchemas(handler, fieldsDir);
 
+            progress.accept("  Building primitive array index...");
             buildPrimArrayIndex(primArrayScratch, indexDir, objectCount);
 
             deleteIfExists(scratchIdMap, scratchEdges, scratchClassOfRaw);

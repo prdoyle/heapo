@@ -12,6 +12,7 @@ application {
 }
 
 dependencies {
+    implementation(project(":util"))
     implementation(project(":model"))
     implementation(project(":unpack"))
     implementation(project(":indexes"))

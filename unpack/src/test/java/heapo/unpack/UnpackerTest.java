@@ -1,5 +1,6 @@
 package heapo.unpack;
 
+import heapo.util.IndexFile;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
@@ -102,14 +103,8 @@ class UnpackerTest {
         int objectCount = heap.objectCount();
         int[] classOf   = readIntArray(heap.indexDir().resolve("class-of.bin"), objectCount);
 
-        // Build a simple raw-id lookup (sorted rawIds → denseIds).
-        // The ID map has objectCount-1 entries (null sentinel at dense ID 0 has no raw ID).
-        int realCount = objectCount - 1;
-        long[] sortedRawIds = readLongArray(heap.indexDir().resolve("raw-id-lookup-sorted.bin"), realCount);
-        int[]  denseIds     = readIntArray( heap.indexDir().resolve("raw-id-lookup-dense.bin"),  realCount);
-
         // Get class dense IDs by re-scanning the HPROF for class names
-        long[] classDenseIds = findClassDenseIds(sortedRawIds, denseIds);
+        long[] classDenseIds = findClassDenseIds();
         int fooDenseClassId = (int) classDenseIds[0];
         int barDenseClassId = (int) classDenseIds[1];
 
@@ -195,7 +190,7 @@ class UnpackerTest {
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     /** Re-scan the HPROF to find dense IDs of KnownObjects$Foo and KnownObjects$Bar class objects. */
-    private long[] findClassDenseIds(long[] sortedRawIds, int[] denseIds) throws Exception {
+    private long[] findClassDenseIds() throws Exception {
         var handler = new BaseHprofHandler() {
             long fooClassRawId = -1;
             long barClassRawId = -1;
@@ -217,11 +212,14 @@ class UnpackerTest {
         };
         new HprofReader(samplesDir.resolve("known-objects.hprof")).read(handler);
 
-        int fooDense = handler.fooClassRawId >= 0
-            ? Unpacker.resolveDenseId(handler.fooClassRawId, sortedRawIds, denseIds) : -1;
-        int barDense = handler.barClassRawId >= 0
-            ? Unpacker.resolveDenseId(handler.barClassRawId, sortedRawIds, denseIds) : -1;
-        return new long[]{fooDense, barDense};
+        try (var sortedRawIds = IndexFile.openRead(heap.indexDir().resolve("raw-id-lookup-sorted.bin"));
+             var denseIds     = IndexFile.openRead(heap.indexDir().resolve("raw-id-lookup-dense.bin"))) {
+            int fooDense = handler.fooClassRawId >= 0
+                ? Unpacker.resolveDenseId(handler.fooClassRawId, sortedRawIds, denseIds) : -1;
+            int barDense = handler.barClassRawId >= 0
+                ? Unpacker.resolveDenseId(handler.barClassRawId, sortedRawIds, denseIds) : -1;
+            return new long[]{fooDense, barDense};
+        }
     }
 
     private static int[] readIntArray(Path path, int count) throws Exception {
