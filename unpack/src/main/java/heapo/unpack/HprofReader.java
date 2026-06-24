@@ -164,6 +164,8 @@ public final class HprofReader {
 
     private void readHeapDump(CountingInputStream in, long segmentLength, HprofHandler handler) throws IOException {
         long end = in.position() + segmentLength;
+        boolean skip = handler.skipInstances();
+        int idSize = handler.idSize();
         while (in.position() < end) {
             int subTag = in.readUnsignedByte();
             switch (subTag) {
@@ -177,13 +179,31 @@ public final class HprofReader {
                 case HPROF_GC_ROOT_MONITOR_USED -> readRootMonitorUsed(in, handler);
                 case HPROF_GC_ROOT_THREAD_OBJ   -> readRootThreadObj(in, handler);
                 case HPROF_GC_CLASS_DUMP        -> readClassDump(in, handler);
-                case HPROF_GC_INSTANCE_DUMP     -> readInstanceDump(in, handler);
-                case HPROF_GC_OBJ_ARRAY_DUMP    -> readObjArrayDump(in, handler);
-                case HPROF_GC_PRIM_ARRAY_DUMP   -> readPrimArrayDump(in, handler);
+                case HPROF_GC_INSTANCE_DUMP     -> { if (skip) skipInstanceDump(in, idSize);    else readInstanceDump(in, handler); }
+                case HPROF_GC_OBJ_ARRAY_DUMP    -> { if (skip) skipObjArrayDump(in, idSize);    else readObjArrayDump(in, handler); }
+                case HPROF_GC_PRIM_ARRAY_DUMP   -> { if (skip) skipPrimArrayDump(in, idSize);   else readPrimArrayDump(in, handler); }
                 default -> throw new IOException(
                     String.format("Unknown heap dump sub-tag: 0x%02X at position %d", subTag, in.position()));
             }
         }
+    }
+
+    private void skipInstanceDump(CountingInputStream in, int idSize) throws IOException {
+        in.skipNBytes(idSize + 4 + idSize);   // objectId + stackSerial + classObjectId
+        in.skipNBytes(in.readInt());           // dataLen + data
+    }
+
+    private void skipObjArrayDump(CountingInputStream in, int idSize) throws IOException {
+        in.skipNBytes(idSize + 4);             // objectId + stackSerial
+        long skip = Integer.toUnsignedLong(in.readInt()) * idSize + idSize; // numElements*idSize + elementClassId
+        in.skipNBytes(skip);
+    }
+
+    private void skipPrimArrayDump(CountingInputStream in, int idSize) throws IOException {
+        in.skipNBytes(idSize + 4);             // objectId + stackSerial
+        int numElements = in.readInt();
+        int elementType = in.readUnsignedByte();
+        in.skipNBytes((long) numElements * primitiveTypeSize(elementType));
     }
 
     // ── GC root readers ──────────────────────────────────────────────────────

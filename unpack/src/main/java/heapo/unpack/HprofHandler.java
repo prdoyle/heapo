@@ -13,6 +13,13 @@ public interface HprofHandler {
     /** Returns the id size in bytes (4 or 8) as set by the header callback. */
     int idSize();
 
+    /**
+     * If true, {@link HprofReader} skips instance/array dump sub-records without
+     * allocating or invoking the corresponding callbacks. Used by pre-scan passes
+     * that only need class metadata.
+     */
+    default boolean skipInstances() { return false; }
+
     void header(String magic, int idSize, long timestamp) throws IOException;
 
     void string(long rawId, String value) throws IOException;

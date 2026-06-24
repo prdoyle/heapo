@@ -1,7 +1,8 @@
 package heapo.unpack;
 
-import heapo.util.IndexFile;
 import heapo.util.ExternalMergeSort;
+import heapo.util.IndexFile;
+import heapo.util.SortedLongSetBuilder;
 
 import java.io.*;
 import java.nio.ByteBuffer;
@@ -37,7 +38,12 @@ public final class Unpacker {
         }
 
         long hprofBytes = Files.size(hprofFile);
-        progress.accept(String.format("Scanning heap dump (%.1f MB)...", hprofBytes / 1_048_576.0));
+        progress.accept(String.format("Pre-scanning heap dump (%.1f MB)...", hprofBytes / 1_048_576.0));
+        var collector = new StringIdCollector();
+        new HprofReader(hprofFile).read(collector);
+        long[] neededStringIds = collector.build();
+
+        progress.accept(String.format("Scanning heap dump (%,d class/field string IDs)...", neededStringIds.length));
 
         Path indexDir  = outputDir.resolve("indexes");
         Path bitsetDir = outputDir.resolve("bitsets");
@@ -55,7 +61,7 @@ public final class Unpacker {
         Path fieldValuesTempDir   = tempDir.resolve("fields-tmp");
         Files.createDirectories(fieldValuesTempDir);
 
-        var handler = new ScanHandler(scratchIdMap, scratchEdges, scratchClassOfRaw,
+        var handler = new ScanHandler(neededStringIds, scratchIdMap, scratchEdges, scratchClassOfRaw,
                                       indexDir.resolve("shallow-size.bin"), fieldValuesTempDir,
                                       primArrayScratch, scratchObjArrays, scratchPrimArrayTypes);
         new HprofReader(hprofFile).read(handler);
@@ -101,22 +107,47 @@ public final class Unpacker {
             try { Files.delete(tempDir); } catch (IOException ignored) {}
 
             writeManifest(hprofFile, objectCount, classCount, outputDir.resolve("manifest.json"));
-            writeClassNames(handler.classNameIds, handler.strings, sortedRawIds, denseIds,
+            writeClassNames(handler.classNames, sortedRawIds, denseIds,
                             outputDir.resolve("class-names.txt"));
             return new UnpackedHeap(outputDir, objectCount, classCount);
         }
+    }
+
+    // ── Pre-scan: collect needed string IDs ──────────────────────────────────
+
+    private static final class StringIdCollector extends BaseHprofHandler {
+        private final SortedLongSetBuilder builder = new SortedLongSetBuilder();
+
+        @Override public boolean skipInstances() { return true; }
+
+        @Override public void loadClass(int s, long classObjectId, long nameStringId) {
+            builder.add(nameStringId);
+        }
+
+        @Override public void classDump(long classObjectId, long superClassId, int instanceSize,
+                                        long[] fieldNameIds, byte[] fieldTypes) {
+            for (long id : fieldNameIds) builder.add(id);
+        }
+
+        @Override public void staticObjectField(long classObjectId, long nameStringId, long valueRawId) {
+            builder.add(nameStringId);
+        }
+
+        long[] build() { return builder.build(); }
     }
 
     // ── HPROF scan handler ───────────────────────────────────────────────────
 
     static final class ScanHandler extends BaseHprofHandler {
 
-        // Small maps — bounded by class/string count
-        final Map<Long, String>        strings            = new HashMap<>();
-        final Map<Long, Long>          classNameIds       = new HashMap<>();  // classObjectId → nameStringId
+        // Filtered string table: only IDs collected by StringIdCollector are stored
+        private final long[]           neededStringIds;
+        private final Map<Long, String> strings          = new HashMap<>();
+        // Maps bounded by class count
+        final Map<Long, String>        classNames         = new HashMap<>();  // classObjectId → resolved name
         final Map<Long, Long>          superClasses       = new HashMap<>();  // classObjectId → superRawId
         final Map<Long, byte[]>        classFields        = new HashMap<>();  // classObjectId → field types
-        final Map<Long, long[]>        classFieldNames    = new HashMap<>();  // classObjectId → field name string IDs
+        final Map<Long, String[]>      classFieldNames    = new HashMap<>();  // classObjectId → resolved field names
         final Map<Long, Integer>       instanceSizes      = new HashMap<>();  // classObjectId → instanceSize
         final Map<Long, Integer>       classDenseIds      = new HashMap<>();  // classObjectId → dense ID
         final Map<Long, List<String>>  staticFieldNames   = new HashMap<>();  // classObjectId → static obj-ref field names (non-null only, in order)
@@ -145,10 +176,11 @@ public final class Unpacker {
         private final Path fieldValuesTempDir;
         final Map<Integer, DataOutputStream> fieldValueStreams = new LinkedHashMap<>();
 
-        ScanHandler(Path scratchIdMap, Path scratchEdges, Path scratchClassOfRaw,
+        ScanHandler(long[] neededStringIds, Path scratchIdMap, Path scratchEdges, Path scratchClassOfRaw,
                     Path shallowSizePath, Path fieldValuesTempDir,
                     Path primArrayScratch, Path objArrayScratch, Path primTypesScratch)
                 throws IOException {
+            this.neededStringIds  = neededStringIds;
             idMapOut              = dataOut(scratchIdMap);
             edgesOut              = dataOut(scratchEdges);
             classOfRawOut         = dataOut(scratchClassOfRaw);
@@ -178,17 +210,15 @@ public final class Unpacker {
 
         @Override
         public void string(long rawId, String value) {
-            strings.put(rawId, value);
+            if (Arrays.binarySearch(neededStringIds, rawId) >= 0) strings.put(rawId, value);
         }
 
         @Override
         public void loadClass(int classSerial, long classObjectId, long nameStringId) {
-            classNameIds.put(classObjectId, nameStringId);
-            // Detect java.lang.Class early — LOAD_CLASS records precede HEAP_DUMP,
-            // so javaLangClassRawId is set before any classDump callback runs.
-            if ("java/lang/Class".equals(strings.get(nameStringId))) {
-                javaLangClassRawId = classObjectId;
-            }
+            // STRING records precede LOAD_CLASS in the file, so the string is already filtered in.
+            String name = strings.getOrDefault(nameStringId, "?");
+            classNames.put(classObjectId, name);
+            if ("java/lang/Class".equals(name)) javaLangClassRawId = classObjectId;
         }
 
         @Override
@@ -199,7 +229,11 @@ public final class Unpacker {
             classCount++;
             superClasses.put(classObjectId, superClassId);
             classFields.put(classObjectId, fieldTypes);
-            classFieldNames.put(classObjectId, fieldNameIds.clone());
+            // Resolve field names immediately; strings map is already filtered
+            String[] names = new String[fieldNameIds.length];
+            for (int i = 0; i < fieldNameIds.length; i++)
+                names[i] = strings.getOrDefault(fieldNameIds[i], "field_" + i);
+            classFieldNames.put(classObjectId, names);
             instanceSizes.put(classObjectId, instanceSize);
             classDenseIds.put(classObjectId, denseId);
 
@@ -543,13 +577,13 @@ public final class Unpacker {
             int scratchOff = 0, finalOff = 0, fieldIdx = 0;
             long curClass = rawClassId;
             while (curClass != 0) {
-                byte[] ftypes   = handler.classFields.get(curClass);
-                long[] fnameIds = handler.classFieldNames.get(curClass);
+                byte[]   ftypes  = handler.classFields.get(curClass);
+                String[] fnames  = handler.classFieldNames.get(curClass);
                 if (ftypes == null) break;
                 for (int i = 0; i < ftypes.length; i++) {
                     int type = ftypes[i] & 0xFF;
-                    String name = (fnameIds != null && i < fnameIds.length)
-                        ? handler.strings.getOrDefault(fnameIds[i], "field_" + fieldIdx)
+                    String name = (fnames != null && i < fnames.length)
+                        ? fnames[i]
                         : "field_" + fieldIdx;
                     fieldNames.add(name);
                     if (type == HprofReader.TYPE_OBJECT) {
@@ -752,16 +786,14 @@ public final class Unpacker {
     }
 
     /** Writes class-names.txt: one line per class, format "<denseId>\t<hprofSlashedName>". */
-    private static void writeClassNames(Map<Long, Long> classNameIds, Map<Long, String> strings,
+    private static void writeClassNames(Map<Long, String> classNames,
                                         IndexFile sortedRawIds, IndexFile denseIds, Path outPath)
             throws IOException {
         List<String> lines = new ArrayList<>();
-        for (var entry : classNameIds.entrySet()) {
+        for (var entry : classNames.entrySet()) {
             int denseId = resolveDenseId(entry.getKey(), sortedRawIds, denseIds);
             if (denseId < 0) continue;
-            String name = strings.get(entry.getValue());
-            if (name == null) continue;
-            lines.add(denseId + "\t" + name);
+            lines.add(denseId + "\t" + entry.getValue());
         }
         Files.writeString(outPath, String.join("\n", lines) + "\n");
     }
