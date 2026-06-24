@@ -1,5 +1,6 @@
 package heapo.indexes;
 
+import heapo.util.IndexFile;
 import heapo.unpack.UnpackedHeap;
 
 import java.io.*;
@@ -14,55 +15,58 @@ public final class InstanceListBuilder {
     private InstanceListBuilder() {}
 
     public static void build(UnpackedHeap heap, Path tempDir) throws IOException {
-        int     objectCount = heap.objectCount();
-        Path    indexDir    = heap.indexDir();
-        Path    classOfPath = indexDir.resolve("class-of.bin");
+        int  objectCount = heap.objectCount();
+        Path indexDir    = heap.indexDir();
+        Path classOfPath = indexDir.resolve("class-of.bin");
 
-        // Counting sort: count instances per class
-        int[] counts = new int[objectCount];
-        try (var classOf = IndexFile.openRead(classOfPath)) {
-            for (int i = 0; i < objectCount; i++) counts[classOf.readInt(i)]++;
-        }
-
-        // Compute prefix-sum offsets
-        long[] offsets = new long[objectCount + 1];
-        for (int i = 0; i < objectCount; i++) offsets[i + 1] = offsets[i] + counts[i];
-
-        // Write sorted pairs (classId, instanceId) via sorted scratch
-        // Re-use counts as write cursors
-        int[] cursor = counts.clone();
-        for (int i = 0; i < objectCount; i++) cursor[i] = (int) offsets[i];
-
-        // Write edges in classId order: second pass over class-of
-        Path    tmpEdges   = tempDir.resolve("il-edges.bin.tmp");
-        Path    tmpOffsets = tempDir.resolve("il-offsets.bin.tmp");
+        Path tmpCounts  = tempDir.resolve("il-counts.bin.tmp");
+        Path tmpOffsets = tempDir.resolve("il-offsets.bin.tmp");
+        Path tmpCursor  = tempDir.resolve("il-cursor.bin.tmp");
+        Path tmpEdges   = tempDir.resolve("il-edges.bin.tmp");
         try {
-            // Allocate edge array in memory (objectCount ints ≈ few MB for typical heaps)
-            int[] edges = new int[objectCount];
-            try (var classOf = IndexFile.openRead(classOfPath)) {
+            // Counting sort pass: count instances per class
+            try (var counts  = IndexFile.create(tmpCounts, objectCount, 4);
+                 var classOf = IndexFile.openRead(classOfPath)) {
                 for (int i = 0; i < objectCount; i++) {
                     int cls = classOf.readInt(i);
-                    edges[cursor[cls]++] = i;
+                    counts.writeInt(cls, counts.readInt(cls) + 1);
                 }
             }
 
-            // Write offsets
-            try (var out = new DataOutputStream(new BufferedOutputStream(
-                    Files.newOutputStream(tmpOffsets)))) {
-                for (long off : offsets) out.writeLong(off);
+            // Prefix-sum: offsets[i+1] = offsets[i] + counts[i]
+            try (var counts  = IndexFile.openRead(tmpCounts);
+                 var offsets = IndexFile.create(tmpOffsets, (long) objectCount + 1, 8)) {
+                for (int i = 0; i < objectCount; i++)
+                    offsets.writeLong(i + 1, offsets.readLong(i) + counts.readInt(i));
             }
-            // Write edges
-            try (var out = new DataOutputStream(new BufferedOutputStream(
-                    Files.newOutputStream(tmpEdges)))) {
-                for (int e : edges) out.writeInt(e);
+            Files.delete(tmpCounts);
+
+            // Scatter pass: edges[cursor[cls]++] = instanceId
+            try (var cursor  = IndexFile.create(tmpCursor, objectCount, 4);
+                 var edges   = IndexFile.create(tmpEdges, objectCount, 4);
+                 var offsets = IndexFile.openRead(tmpOffsets);
+                 var classOf = IndexFile.openRead(classOfPath)) {
+                // Initialize cursor from offsets
+                for (int i = 0; i < objectCount; i++)
+                    cursor.writeInt(i, (int) offsets.readLong(i));
+                // Scatter
+                for (int i = 0; i < objectCount; i++) {
+                    int cls = classOf.readInt(i);
+                    int pos = cursor.readInt(cls);
+                    edges.writeInt(pos, i);
+                    cursor.writeInt(cls, pos + 1);
+                }
             }
+            Files.delete(tmpCursor);
 
             Path finalOffsets = indexDir.resolve("instance-list-offsets.bin");
             Path finalEdges   = indexDir.resolve("instance-list-edges.bin");
             Files.move(tmpOffsets, finalOffsets, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
             Files.move(tmpEdges,   finalEdges,   StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
         } finally {
+            try { Files.deleteIfExists(tmpCounts);  } catch (IOException ignored) {}
             try { Files.deleteIfExists(tmpOffsets); } catch (IOException ignored) {}
+            try { Files.deleteIfExists(tmpCursor);  } catch (IOException ignored) {}
             try { Files.deleteIfExists(tmpEdges);   } catch (IOException ignored) {}
         }
     }

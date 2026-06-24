@@ -1,5 +1,6 @@
 package heapo.indexes;
 
+import heapo.util.IndexFile;
 import heapo.unpack.HprofReader;
 import heapo.unpack.UnpackedHeap;
 

@@ -1,5 +1,6 @@
 package heapo.unpack;
 
+import heapo.util.IndexFile;
 import heapo.util.ExternalMergeSort;
 
 import java.io.*;
@@ -65,37 +66,38 @@ public final class Unpacker {
         int classCount  = handler.classCount;
         progress.accept(String.format("  %,d objects, %,d classes", realCount, classCount));
 
-        // Sort id-map and split into parallel lookup arrays (realCount entries only)
+        // Sort id-map and split into parallel mmap'd lookup files (realCount entries only)
         sortAndSplitIdMap(scratchIdMap, tempDir, indexDir);
-        long[] sortedRawIds = loadLongs(indexDir.resolve("raw-id-lookup-sorted.bin"), realCount);
-        int[]  denseIds     = loadInts( indexDir.resolve("raw-id-lookup-dense.bin"),  realCount);
+        try (var sortedRawIds = IndexFile.openRead(indexDir.resolve("raw-id-lookup-sorted.bin"));
+             var denseIds     = IndexFile.openRead(indexDir.resolve("raw-id-lookup-dense.bin"))) {
 
-        // Resolve and write remaining index files
-        resolveClassOf(scratchClassOfRaw, indexDir.resolve("class-of.bin"),
-                       sortedRawIds, denseIds, objectCount);
-        buildForwardRefs(scratchEdges, tempDir, indexDir, sortedRawIds, denseIds, objectCount);
-        buildSuperClassOf(handler.superClasses, indexDir, sortedRawIds, denseIds, objectCount);
-        buildGcRoots(handler.gcRootRawIds, handler.gcRootTypes, indexDir,
-                     sortedRawIds, denseIds, objectCount);
-        buildIsObjArray(handler.objArrayDenseIds, indexDir, objectCount);
-        buildPrimArrayTypes(handler.primArrayElementTypes, indexDir, objectCount);
+            // Resolve and write remaining index files
+            resolveClassOf(scratchClassOfRaw, indexDir.resolve("class-of.bin"),
+                           sortedRawIds, denseIds, objectCount);
+            buildForwardRefs(scratchEdges, tempDir, indexDir, sortedRawIds, denseIds, objectCount);
+            buildSuperClassOf(handler.superClasses, indexDir, sortedRawIds, denseIds, objectCount);
+            buildGcRoots(handler.gcRootRawIds, handler.gcRootTypes, indexDir,
+                         sortedRawIds, denseIds, objectCount);
+            buildIsObjArray(handler.objArrayDenseIds, indexDir, objectCount);
+            buildPrimArrayTypes(handler.primArrayElementTypes, indexDir, objectCount);
 
-        // Build field-value index: per-class field files (TYPE_OBJECT + primitives) + schemas
-        Path fieldsDir = outputDir.resolve("fields");
-        Files.createDirectories(fieldsDir);
-        resolveAndWriteFieldValues(handler, fieldValuesTempDir, fieldsDir, sortedRawIds, denseIds);
-        writeStaticFieldSchemas(handler, fieldsDir);
+            // Build field-value index: per-class field files (TYPE_OBJECT + primitives) + schemas
+            Path fieldsDir = outputDir.resolve("fields");
+            Files.createDirectories(fieldsDir);
+            resolveAndWriteFieldValues(handler, fieldValuesTempDir, fieldsDir, sortedRawIds, denseIds);
+            writeStaticFieldSchemas(handler, fieldsDir);
 
-        buildPrimArrayIndex(primArrayScratch, indexDir, objectCount);
+            buildPrimArrayIndex(primArrayScratch, indexDir, objectCount);
 
-        deleteIfExists(scratchIdMap, scratchEdges, scratchClassOfRaw);
-        try { Files.delete(fieldValuesTempDir); } catch (IOException ignored) {}
-        try { Files.delete(tempDir); } catch (IOException ignored) {}
+            deleteIfExists(scratchIdMap, scratchEdges, scratchClassOfRaw);
+            try { Files.delete(fieldValuesTempDir); } catch (IOException ignored) {}
+            try { Files.delete(tempDir); } catch (IOException ignored) {}
 
-        writeManifest(hprofFile, objectCount, classCount, outputDir.resolve("manifest.json"));
-        writeClassNames(handler.classNameIds, handler.strings, sortedRawIds, denseIds,
-                        outputDir.resolve("class-names.txt"));
-        return new UnpackedHeap(outputDir, objectCount, classCount);
+            writeManifest(hprofFile, objectCount, classCount, outputDir.resolve("manifest.json"));
+            writeClassNames(handler.classNameIds, handler.strings, sortedRawIds, denseIds,
+                            outputDir.resolve("class-names.txt"));
+            return new UnpackedHeap(outputDir, objectCount, classCount);
+        }
     }
 
     // ── HPROF scan handler ───────────────────────────────────────────────────
@@ -389,7 +391,7 @@ public final class Unpacker {
     // ── Post-scan: class-of ───────────────────────────────────────────────────
 
     private static void resolveClassOf(Path scratchClassOfRaw, Path classOfPath,
-                                       long[] sortedRawIds, int[] denseIds, int objectCount)
+                                       IndexFile sortedRawIds, IndexFile denseIds, int objectCount)
             throws IOException {
         try (var in  = dataIn(scratchClassOfRaw);
              var out = dataOut(classOfPath)) {
@@ -405,7 +407,7 @@ public final class Unpacker {
     // ── Post-scan: forward refs (CSR) ─────────────────────────────────────────
 
     private static void buildForwardRefs(Path scratchEdges, Path tempDir, Path indexDir,
-                                         long[] sortedRawIds, int[] denseIds, int objectCount)
+                                         IndexFile sortedRawIds, IndexFile denseIds, int objectCount)
             throws IOException {
         // Step 1: sort edges by srcDenseId
         Path sortedEdges = tempDir.resolve("edges-sorted.bin");
@@ -433,23 +435,21 @@ public final class Unpacker {
         }
         Files.delete(sortedEdges);
 
-        // Step 3: count edges per src using +1 offset trick for correct prefix sum
-        long[] offsets = new long[objectCount + 1];  // offsets[src+1] = count for src
-        try (var in = dataIn(resolvedEdges)) {
-            while (true) {
-                try {
-                    int src = in.readInt();
-                    in.readInt();  // dst — skip
-                    offsets[src + 1]++;
-                } catch (EOFException e) { break; }
+        // Step 3: count edges per src using +1 offset trick, then prefix-sum into final offsets file
+        try (var offsets = IndexFile.create(indexDir.resolve("forward-refs-offsets.bin"),
+                                            (long) objectCount + 1, 8)) {
+            try (var in = dataIn(resolvedEdges)) {
+                while (true) {
+                    try {
+                        int src = in.readInt();
+                        in.readInt();  // dst — skip
+                        offsets.writeLong(src + 1, offsets.readLong(src + 1) + 1);
+                    } catch (EOFException e) { break; }
+                }
             }
-        }
-        // Inclusive prefix sum → CSR offsets (offsets[0] = 0, offsets[i] = start of edges for obj i)
-        for (int i = 1; i <= objectCount; i++) offsets[i] += offsets[i - 1];
-
-        // Step 4: write forward-refs-offsets.bin
-        try (var out = dataOut(indexDir.resolve("forward-refs-offsets.bin"))) {
-            for (long off : offsets) out.writeLong(off);
+            // Inclusive prefix sum → CSR offsets
+            for (long i = 1; i <= objectCount; i++)
+                offsets.writeLong(i, offsets.readLong(i) + offsets.readLong(i - 1));
         }
 
         // Step 5: write forward-refs-edges.bin (dst dense IDs in src order)
@@ -468,25 +468,23 @@ public final class Unpacker {
     // ── Post-scan: super-class-of ─────────────────────────────────────────────
 
     private static void buildSuperClassOf(Map<Long, Long> superClasses, Path indexDir,
-                                          long[] sortedRawIds, int[] denseIds, int objectCount)
+                                          IndexFile sortedRawIds, IndexFile denseIds, int objectCount)
             throws IOException {
-        int[] superOf = new int[objectCount];  // 0 = no superclass
-        for (var entry : superClasses.entrySet()) {
-            int classDense = resolveDenseId(entry.getKey(),   sortedRawIds, denseIds);
-            int superDense = resolveDenseId(entry.getValue(), sortedRawIds, denseIds);
-            if (classDense >= 0 && classDense < objectCount) {
-                superOf[classDense] = Math.max(superDense, 0);
+        try (var superOf = IndexFile.create(indexDir.resolve("super-class-of.bin"), objectCount, 4)) {
+            for (var entry : superClasses.entrySet()) {
+                int classDense = resolveDenseId(entry.getKey(),   sortedRawIds, denseIds);
+                int superDense = resolveDenseId(entry.getValue(), sortedRawIds, denseIds);
+                if (classDense >= 0 && classDense < objectCount) {
+                    superOf.writeInt(classDense, Math.max(superDense, 0));
+                }
             }
-        }
-        try (var out = dataOut(indexDir.resolve("super-class-of.bin"))) {
-            for (int s : superOf) out.writeInt(s);
         }
     }
 
     // ── Post-scan: gc-roots ───────────────────────────────────────────────────
 
     private static void buildGcRoots(List<Long> gcRootRawIds, Map<Long, Byte> gcRootTypes,
-                                     Path indexDir, long[] sortedRawIds, int[] denseIds,
+                                     Path indexDir, IndexFile sortedRawIds, IndexFile denseIds,
                                      int objectCount) throws IOException {
         var seen  = new HashSet<Integer>();
         var roots = new ArrayList<Integer>();
@@ -499,12 +497,12 @@ public final class Unpacker {
         }
 
         // gc-root-type-map.bin: one byte per dense ID, 0 = not a root, else HPROF_GC_ROOT_* type
-        byte[] typeMap = new byte[objectCount];
-        for (var entry : gcRootTypes.entrySet()) {
-            int dense = resolveDenseId(entry.getKey(), sortedRawIds, denseIds);
-            if (dense >= 0 && dense < objectCount) typeMap[dense] = entry.getValue();
+        try (var typeMap = IndexFile.create(indexDir.resolve("gc-root-type-map.bin"), objectCount, 1)) {
+            for (var entry : gcRootTypes.entrySet()) {
+                int dense = resolveDenseId(entry.getKey(), sortedRawIds, denseIds);
+                if (dense >= 0 && dense < objectCount) typeMap.writeByteAt(dense, entry.getValue());
+            }
         }
-        Files.write(indexDir.resolve("gc-root-type-map.bin"), typeMap);
     }
 
     // ── Post-scan: field values ───────────────────────────────────────────────
@@ -514,7 +512,7 @@ public final class Unpacker {
      * (TYPE_OBJECT as 4-byte dense IDs, 0 = null; primitives copied as-is).
      */
     private static void resolveAndWriteFieldValues(ScanHandler handler, Path tempDir, Path fieldsDir,
-                                                    long[] sortedRawIds, int[] denseIds)
+                                                    IndexFile sortedRawIds, IndexFile denseIds)
             throws IOException {
         Map<Integer, Long> denseToRaw = new HashMap<>();
         for (var e : handler.classDenseIds.entrySet()) denseToRaw.put(e.getValue(), e.getKey());
@@ -629,50 +627,47 @@ public final class Unpacker {
      */
     private static void buildPrimArrayIndex(Path scratchPath, Path indexDir, int objectCount)
             throws IOException {
-        long[] offsets = new long[objectCount];
-        Arrays.fill(offsets, -1L);
+        try (var offsets = IndexFile.create(indexDir.resolve("prim-array-offsets.bin"), objectCount, 8)) {
+            // Initialize all entries to -1 (= not a prim array)
+            for (long i = 0; i < objectCount; i++) offsets.writeLong(i, -1L);
 
-        Path dataPath = indexDir.resolve("prim-array-data.bin");
-        long dataOffset = 0;
-
-        try (var in  = dataIn(scratchPath);
-             var out = dataOut(dataPath)) {
-            while (true) {
-                try {
-                    int    denseId = in.readInt();
-                    int    length  = in.readInt();
-                    byte[] bytes   = in.readNBytes(length);
-                    offsets[denseId] = dataOffset;
-                    out.writeInt(length);
-                    out.write(bytes);
-                    // Pad to 4-byte alignment so readIntAt() works for subsequent records.
-                    int pad = (4 - (length & 3)) & 3;
-                    for (int i = 0; i < pad; i++) out.writeByte(0);
-                    dataOffset += 4L + length + pad;
-                } catch (EOFException e) { break; }
+            Path dataPath = indexDir.resolve("prim-array-data.bin");
+            long dataOffset = 0;
+            try (var in  = dataIn(scratchPath);
+                 var out = dataOut(dataPath)) {
+                while (true) {
+                    try {
+                        int    denseId = in.readInt();
+                        int    length  = in.readInt();
+                        byte[] bytes   = in.readNBytes(length);
+                        offsets.writeLong(denseId, dataOffset);
+                        out.writeInt(length);
+                        out.write(bytes);
+                        // Pad to 4-byte alignment so readIntAt() works for subsequent records.
+                        int pad = (4 - (length & 3)) & 3;
+                        for (int i = 0; i < pad; i++) out.writeByte(0);
+                        dataOffset += 4L + length + pad;
+                    } catch (EOFException e) { break; }
+                }
             }
-        }
-
-        try (var out = dataOut(indexDir.resolve("prim-array-offsets.bin"))) {
-            for (long off : offsets) out.writeLong(off);
         }
 
         Files.delete(scratchPath);
     }
 
     private static void buildIsObjArray(List<Integer> ids, Path indexDir, int objectCount) throws IOException {
-        byte[] arr = new byte[objectCount];
-        for (int id : ids) if (id >= 0 && id < objectCount) arr[id] = 1;
-        Files.write(indexDir.resolve("is-obj-array.bin"), arr);
+        try (var arr = IndexFile.create(indexDir.resolve("is-obj-array.bin"), objectCount, 1)) {
+            for (int id : ids) if (id >= 0 && id < objectCount) arr.writeByteAt(id, (byte) 1);
+        }
     }
 
     private static void buildPrimArrayTypes(Map<Integer, Byte> types, Path indexDir, int objectCount) throws IOException {
-        byte[] arr = new byte[objectCount];
-        for (var e : types.entrySet()) {
-            int id = e.getKey();
-            if (id >= 0 && id < objectCount) arr[id] = e.getValue();
+        try (var arr = IndexFile.create(indexDir.resolve("prim-array-types.bin"), objectCount, 1)) {
+            for (var e : types.entrySet()) {
+                int id = e.getKey();
+                if (id >= 0 && id < objectCount) arr.writeByteAt(id, e.getValue());
+            }
         }
-        Files.write(indexDir.resolve("prim-array-types.bin"), arr);
     }
 
     // ── Manifest ─────────────────────────────────────────────────────────────
@@ -734,7 +729,7 @@ public final class Unpacker {
 
     /** Writes class-names.txt: one line per class, format "<denseId>\t<hprofSlashedName>". */
     private static void writeClassNames(Map<Long, Long> classNameIds, Map<Long, String> strings,
-                                        long[] sortedRawIds, int[] denseIds, Path outPath)
+                                        IndexFile sortedRawIds, IndexFile denseIds, Path outPath)
             throws IOException {
         List<String> lines = new ArrayList<>();
         for (var entry : classNameIds.entrySet()) {
@@ -749,27 +744,18 @@ public final class Unpacker {
 
     // ── Utilities ────────────────────────────────────────────────────────────
 
-    /** Binary search for rawId in sorted lookup; returns dense ID or -1 if not found. */
-    public static int resolveDenseId(long rawId, long[] sortedRawIds, int[] denseIds) {
+    /** Binary search for rawId in sorted mmap'd lookup; returns dense ID or -1 if not found. */
+    public static int resolveDenseId(long rawId, IndexFile sortedRawIds, IndexFile denseIds) {
         if (rawId == 0) return -1;
-        int idx = Arrays.binarySearch(sortedRawIds, rawId);
-        return idx >= 0 ? denseIds[idx] : -1;
-    }
-
-    private static long[] loadLongs(Path path, int count) throws IOException {
-        long[] arr = new long[count];
-        try (var in = dataIn(path)) {
-            for (int i = 0; i < count; i++) arr[i] = in.readLong();
+        long lo = 0, hi = sortedRawIds.longCount() - 1;
+        while (lo <= hi) {
+            long mid = (lo + hi) >>> 1;
+            long val = sortedRawIds.readLong(mid);
+            if (val == rawId) return denseIds.readInt(mid);
+            if (val < rawId) lo = mid + 1;
+            else             hi = mid - 1;
         }
-        return arr;
-    }
-
-    private static int[] loadInts(Path path, int count) throws IOException {
-        int[] arr = new int[count];
-        try (var in = dataIn(path)) {
-            for (int i = 0; i < count; i++) arr[i] = in.readInt();
-        }
-        return arr;
+        return -1;
     }
 
     private static DataInputStream dataIn(Path path) throws IOException {

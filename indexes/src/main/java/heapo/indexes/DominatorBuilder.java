@@ -1,5 +1,6 @@
 package heapo.indexes;
 
+import heapo.util.IndexFile;
 import heapo.unpack.UnpackedHeap;
 
 import java.io.*;
@@ -23,169 +24,145 @@ public final class DominatorBuilder {
         int  objectCount = heap.objectCount();
         Path indexDir    = heap.indexDir();
 
-        // Load DFS data
-        // dfsVertex[n] = dense ID of vertex at DFS position n (0-indexed, excluding super-root)
+        // n = total vertices in DFS tree (super-root at pos 0; real vertices at 1..reachableCount)
         int reachableCount = (int)(Files.size(indexDir.resolve("dfs-vertex.bin")) / 4);
-        int[] dfsVertex = loadInts(indexDir.resolve("dfs-vertex.bin"), reachableCount);
-
-        // dfsNum[v] = DFS position of vertex v (UNREACHABLE if not visited)
-        long[] dfsNumRaw = loadLongs(indexDir.resolve("dfs-num.bin"), objectCount);
-
-        // dfsParent[v] = parent dense ID in DFS tree (-1 = root/unreachable)
-        int[] dfsParent = loadInts(indexDir.resolve("dfs-parent.bin"), objectCount);
-
-        // n = total vertices in DFS tree (including super-root at position 0)
-        // Super-root occupies position 0; real vertices at positions 1..reachableCount
         int n = reachableCount + 1;
 
-        // LT arrays indexed by DFS position (0 = super-root)
-        int[] semi     = new int[n];   // semidominator DFS position
-        int[] idomDfs  = new int[n];   // immediate dominator DFS position (final)
-        int[] ancestor = new int[n];   // forest ancestor for EVAL/LINK
-        int[] label    = new int[n];   // label for path compression
-        // Bucket: for each DFS position p, bucket[p] = list of DFS positions whose
-        // semidominator is p. We use a simple linked-list with next[] array.
-        int[] bucketHead = new int[n];
-        int[] bucketNext = new int[n];
+        // LT temp arrays (indexed by DFS position, size n) — mmap'd to avoid heap pressure
+        Path tmpSemi       = tempDir.resolve("lt-semi.bin.tmp");
+        Path tmpIdomDfs    = tempDir.resolve("lt-idomDfs.bin.tmp");
+        Path tmpAncestor   = tempDir.resolve("lt-ancestor.bin.tmp");
+        Path tmpLabel      = tempDir.resolve("lt-label.bin.tmp");
+        Path tmpBucketHead = tempDir.resolve("lt-bucketHead.bin.tmp");
+        Path tmpBucketNext = tempDir.resolve("lt-bucketNext.bin.tmp");
+        Path tmpIdom       = tempDir.resolve("idom.bin.tmp");
 
-        Arrays.fill(bucketHead, -1);
-        Arrays.fill(bucketNext, -1);
-        Arrays.fill(ancestor, -1);
+        try (var dfsVertex = IndexFile.openRead(indexDir.resolve("dfs-vertex.bin"));
+             var dfsNumRaw = IndexFile.openRead(indexDir.resolve("dfs-num.bin"));
+             var dfsParent = IndexFile.openRead(indexDir.resolve("dfs-parent.bin"));
+             var semi       = IndexFile.create(tmpSemi,       n, 4);
+             var idomDfs    = IndexFile.create(tmpIdomDfs,    n, 4);
+             var ancestor   = IndexFile.create(tmpAncestor,   n, 4);
+             var label      = IndexFile.create(tmpLabel,      n, 4);
+             var bucketHead = IndexFile.create(tmpBucketHead, n, 4);
+             var bucketNext = IndexFile.create(tmpBucketNext, n, 4);
+             var idom       = IndexFile.create(tmpIdom, objectCount, 4)) {
 
-        // Initialize: semi[i] = i, label[i] = i
-        for (int i = 0; i < n; i++) { semi[i] = i; label[i] = i; }
+            // Initialize LT arrays
+            for (int i = 0; i < n; i++) {
+                semi.writeInt(i, i);
+                label.writeInt(i, i);
+                ancestor.writeInt(i, -1);
+                bucketHead.writeInt(i, -1);
+                bucketNext.writeInt(i, -1);
+            }
+            for (int i = 0; i < objectCount; i++) idom.writeInt(i, -1);
 
-        // Scratch stack for iterative EVAL
-        int[] evalStack = new int[64];
+            // Scratch stack for iterative EVAL (O(depth), not O(N))
+            int[] evalStack = new int[64];
 
-        // ── Step 2: compute semidominators (process in reverse DFS order) ──────
+            // ── Step 2: compute semidominators (reverse DFS order) ────────────
 
-        try (var revRefs = new CsrReader(
-                indexDir.resolve("reverse-refs-offsets.bin"),
-                indexDir.resolve("reverse-refs-edges.bin"))) {
+            try (var revRefs = new CsrReader(
+                    indexDir.resolve("reverse-refs-offsets.bin"),
+                    indexDir.resolve("reverse-refs-edges.bin"))) {
 
-            // Process DFS positions n-1 down to 1 (skip 0 = super-root)
-            for (int w = n - 1; w >= 1; w--) {
-                int wVertex = dfsVertex[w - 1];  // actual dense ID (DFS pos w = vertex index w-1)
+                for (int w = n - 1; w >= 1; w--) {
+                    int wVertex = dfsVertex.readInt(w - 1); // dense ID at DFS pos w
 
-                // For each predecessor u of wVertex in the original graph
-                for (long e = revRefs.start(wVertex); e < revRefs.end(wVertex); e++) {
-                    int uVertex = revRefs.edge(e);
-                    // DFS position of uVertex
-                    long uPosLong = dfsNumRaw[uVertex];
-                    if (uPosLong == DfsBuilder.UNREACHABLE) continue;
-                    int u = (int) uPosLong + 1; // +1 because super-root is at pos 0
-                    int evalU = eval(u, ancestor, label, semi, evalStack);
-                    if (semi[evalU] < semi[w]) semi[w] = semi[evalU];
+                    for (long e = revRefs.start(wVertex); e < revRefs.end(wVertex); e++) {
+                        int  uVertex  = revRefs.edge(e);
+                        long uPosLong = dfsNumRaw.readLong(uVertex);
+                        if (uPosLong == DfsBuilder.UNREACHABLE) continue;
+                        int u     = (int) uPosLong + 1; // +1: super-root at pos 0
+                        int evalU = eval(u, ancestor, label, semi, evalStack);
+                        if (semi.readInt(evalU) < semi.readInt(w)) semi.writeInt(w, semi.readInt(evalU));
+                    }
+
+                    // Add w to bucket of its semidominator
+                    int semiW = semi.readInt(w);
+                    bucketNext.writeInt(w, bucketHead.readInt(semiW));
+                    bucketHead.writeInt(semiW, w);
+
+                    // LINK(parent[w], w)
+                    int pw = dfsParentPos(wVertex, dfsParent, dfsNumRaw);
+                    link(pw, w, ancestor);
+
+                    // Process bucket of parent[w]
+                    int v = bucketHead.readInt(pw);
+                    while (v != -1) {
+                        int next  = bucketNext.readInt(v);
+                        int evalV = eval(v, ancestor, label, semi, evalStack);
+                        idomDfs.writeInt(v, (semi.readInt(evalV) < semi.readInt(v)) ? evalV : pw);
+                        v = next;
+                    }
+                    bucketHead.writeInt(pw, -1);
                 }
-                // Also process super-root as predecessor if wVertex is a GC root
-                // (handled implicitly: if parent of wVertex is -1, its parent in DFS is super-root = 0)
+            }
 
-                // Add w to bucket of its semidominator
-                bucketNext[w] = bucketHead[semi[w]];
-                bucketHead[semi[w]] = w;
+            // ── Step 3: finalize dominators ───────────────────────────────────
 
-                // LINK(parent[w], w)
-                int pw = dfsParentPos(wVertex, dfsParent, dfsNumRaw); // DFS pos of parent
-                link(pw, w, ancestor);
-
-                // Process bucket of parent[w]
-                int v = bucketHead[pw];
-                while (v != -1) {
-                    int next = bucketNext[v];
-                    int evalV = eval(v, ancestor, label, semi, evalStack);
-                    idomDfs[v] = (semi[evalV] < semi[v]) ? evalV : pw;
-                    v = next;
+            for (int w = 1; w < n; w++) {
+                if (idomDfs.readInt(w) != semi.readInt(w)) {
+                    idomDfs.writeInt(w, idomDfs.readInt(idomDfs.readInt(w)));
                 }
-                bucketHead[pw] = -1;
+            }
+
+            // Convert DFS-indexed idomDfs → vertex-indexed idom (dense IDs)
+            for (int w = 1; w < n; w++) {
+                int v       = dfsVertex.readInt(w - 1);
+                int idomPos = idomDfs.readInt(w);
+                idom.writeInt(v, idomPos <= 0 ? -1 : dfsVertex.readInt(idomPos - 1));
             }
         }
 
-        // ── Step 3: finalize dominators ───────────────────────────────────────
-
-        for (int w = 1; w < n; w++) {
-            if (idomDfs[w] != semi[w]) {
-                idomDfs[w] = idomDfs[idomDfs[w]];
-            }
+        // Delete LT temp files (kept separate from idom which is the final output)
+        for (Path p : new Path[]{tmpSemi, tmpIdomDfs, tmpAncestor, tmpLabel, tmpBucketHead, tmpBucketNext}) {
+            Files.deleteIfExists(p);
         }
-
-        // Convert from DFS-indexed idomDfs to vertex-indexed idom[] (dense IDs)
-        // idom[v] = dense ID of idom, or -1 if v unreachable or direct child of super-root
-        int[] idom = new int[objectCount];
-        Arrays.fill(idom, -1);
-        for (int w = 1; w < n; w++) {
-            int v = dfsVertex[w - 1]; // dense ID of vertex at DFS pos w
-            int idomPos = idomDfs[w];
-            if (idomPos <= 0) {
-                idom[v] = -1; // dominated by super-root → no real dominator
-            } else {
-                idom[v] = dfsVertex[idomPos - 1];
-            }
-        }
-
-        // Write idom.bin
-        Path tmp = tempDir.resolve("idom.bin.tmp");
-        try (var out = new DataOutputStream(new BufferedOutputStream(Files.newOutputStream(tmp)))) {
-            for (int id : idom) out.writeInt(id);
-        }
-        Files.move(tmp, indexDir.resolve("idom.bin"), StandardCopyOption.ATOMIC_MOVE,
-                   StandardCopyOption.REPLACE_EXISTING);
+        Files.move(tmpIdom, indexDir.resolve("idom.bin"),
+                   StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
     }
 
     // ── LINK: simple forest linking ───────────────────────────────────────────
 
-    private static void link(int v, int w, int[] ancestor) {
-        ancestor[w] = v;
+    private static void link(int v, int w, IndexFile ancestor) {
+        ancestor.writeInt(w, v);
     }
 
     // ── EVAL: iterative path compression ─────────────────────────────────────
 
-    private static int eval(int v, int[] ancestor, int[] label, int[] semi, int[] stack) {
-        if (ancestor[v] == -1) return label[v];
+    private static int eval(int v, IndexFile ancestor, IndexFile label, IndexFile semi, int[] stack) {
+        if (ancestor.readInt(v) == -1) return label.readInt(v);
 
         // Collect path from v to root (where ancestor == -1)
         int len = 0;
         int w = v;
-        while (ancestor[w] != -1) {
+        while (ancestor.readInt(w) != -1) {
             if (len >= stack.length) stack = Arrays.copyOf(stack, stack.length * 2);
             stack[len++] = w;
-            w = ancestor[w];
+            w = ancestor.readInt(w);
         }
         // w is the root of this tree
 
         // Walk back toward v, compressing and propagating minimum label
         for (int i = len - 1; i >= 0; i--) {
-            int x = stack[i];
-            int anc = ancestor[x];
-            if (semi[label[anc]] < semi[label[x]]) label[x] = label[anc];
-            ancestor[x] = w;  // path compression to root
+            int x   = stack[i];
+            int anc = ancestor.readInt(x);
+            if (semi.readInt(label.readInt(anc)) < semi.readInt(label.readInt(x)))
+                label.writeInt(x, label.readInt(anc));
+            ancestor.writeInt(x, w);  // path compression to root
         }
-        return label[v];
+        return label.readInt(v);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     /** DFS position of the DFS-tree parent of vertex v; 0 if parent is super-root or v is root. */
-    private static int dfsParentPos(int v, int[] dfsParent, long[] dfsNumRaw) {
-        int p = dfsParent[v];
+    private static int dfsParentPos(int v, IndexFile dfsParent, IndexFile dfsNumRaw) {
+        int p = dfsParent.readInt(v);
         if (p < 0) return 0;  // parent is super-root (DFS pos 0)
-        long pPos = dfsNumRaw[p];
+        long pPos = dfsNumRaw.readLong(p);
         return (pPos == DfsBuilder.UNREACHABLE) ? 0 : (int) pPos + 1;
-    }
-
-    private static int[] loadInts(Path path, int count) throws IOException {
-        int[] arr = new int[count];
-        try (var in = new DataInputStream(new BufferedInputStream(Files.newInputStream(path)))) {
-            for (int i = 0; i < count; i++) arr[i] = in.readInt();
-        }
-        return arr;
-    }
-
-    private static long[] loadLongs(Path path, int count) throws IOException {
-        long[] arr = new long[count];
-        try (var in = new DataInputStream(new BufferedInputStream(Files.newInputStream(path)))) {
-            for (int i = 0; i < count; i++) arr[i] = in.readLong();
-        }
-        return arr;
     }
 }

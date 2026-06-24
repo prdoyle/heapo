@@ -1,8 +1,8 @@
 package heapo.query_engine;
 
 import heapo.indexes.CsrReader;
-import heapo.indexes.IndexFile;
 import heapo.indexes.IndexRegistry;
+import heapo.util.IndexFile;
 import heapo.model.*;
 import heapo.unpack.HprofReader;
 import heapo.unpack.UnpackedHeap;

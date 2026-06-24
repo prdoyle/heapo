@@ -1,5 +1,6 @@
 package heapo.indexes;
 
+import heapo.util.IndexFile;
 import heapo.unpack.UnpackedHeap;
 
 import java.io.*;
@@ -33,86 +34,88 @@ public final class DfsBuilder {
         // Load gc-roots
         int[] gcRoots = loadGcRoots(indexDir.resolve("gc-roots.bin"));
 
-        // DFS result arrays (indexed by dense ID; super-root not stored in output files)
-        long[] dfsNum   = new long[objectCount];
-        int[]  dfsParent = new int[objectCount];
-        int[]  dfsVertex = new int[objectCount];
-        java.util.Arrays.fill(dfsNum,    UNREACHABLE);
-        java.util.Arrays.fill(dfsParent, -1);
+        Path tmpDfsNum    = tempDir.resolve("dfs-num.bin.tmp");
+        Path tmpDfsVertex = tempDir.resolve("dfs-vertex.bin.tmp");
+        Path tmpDfsParent = tempDir.resolve("dfs-parent.bin.tmp");
 
-        BitSet visited = new BitSet(totalNodes);
-        visited.set(superRoot);
+        // DFS result arrays, mmap'd — indexed by dense ID (super-root not stored in output files)
+        try (var dfsNum    = IndexFile.create(tmpDfsNum,    objectCount, 8);
+             var dfsParent = IndexFile.create(tmpDfsParent, objectCount, 4);
+             var dfsVertex = IndexFile.create(tmpDfsVertex, objectCount, 4)) {
 
-        // Iterative DFS stack: parallel arrays of (vertex, next-edge-index)
-        // For super-root, edges are the gc-roots; for others, use forward-refs CSR.
-        // We encode: vertex >= 0 means real vertex, vertex == superRoot means super-root.
-        int[] stackV    = new int[1024];
-        long[] stackE   = new long[1024];  // next edge position in CSR (or index into gcRoots)
-        int stackTop    = -1;
-        long dfsCounter = 0;
+            // Initialize dfsNum to UNREACHABLE (-1), dfsParent to -1
+            for (int i = 0; i < objectCount; i++) {
+                dfsNum.writeLong(i, UNREACHABLE);
+                dfsParent.writeInt(i, -1);
+            }
 
-        try (var fwdRefs = new CsrReader(
-                indexDir.resolve("forward-refs-offsets.bin"),
-                indexDir.resolve("forward-refs-edges.bin"))) {
+            BitSet visited = new BitSet(totalNodes);
+            visited.set(superRoot);
 
-            // Push super-root
-            stackTop++;
-            if (stackTop >= stackV.length) { stackV = grow(stackV); stackE = growL(stackE); }
-            stackV[stackTop] = superRoot;
-            stackE[stackTop] = 0;
+            // Iterative DFS stack (O(depth), not O(N))
+            int[]  stackV   = new int[1024];
+            long[] stackE   = new long[1024];
+            int    stackTop = -1;
+            long   dfsCounter = 0;
 
-            while (stackTop >= 0) {
-                int v  = stackV[stackTop];
-                long e = stackE[stackTop];
+            try (var fwdRefs = new CsrReader(
+                    indexDir.resolve("forward-refs-offsets.bin"),
+                    indexDir.resolve("forward-refs-edges.bin"))) {
 
-                int neighbor;
-                long nextE;
-                if (v == superRoot) {
-                    // Edges of super-root are gc-roots array
-                    if (e >= gcRoots.length) { stackTop--; continue; }
-                    neighbor = gcRoots[(int) e];
-                    nextE    = e + 1;
-                } else {
-                    long end = fwdRefs.end(v);
-                    if (e >= end) { stackTop--; continue; }
-                    neighbor = fwdRefs.edge(e);
-                    nextE    = e + 1;
-                }
-
-                stackE[stackTop] = nextE;
-
-                if (neighbor < 0 || neighbor >= objectCount || visited.get(neighbor)) continue;
-
-                visited.set(neighbor);
-                int parentV = (v == superRoot) ? -1 : v;
-                dfsNum[neighbor]    = dfsCounter;
-                dfsVertex[(int) dfsCounter] = neighbor;
-                dfsParent[neighbor] = parentV;
-                dfsCounter++;
-
-                // Push neighbor
+                // Push super-root
                 stackTop++;
                 if (stackTop >= stackV.length) { stackV = grow(stackV); stackE = growL(stackE); }
-                stackV[stackTop] = neighbor;
-                stackE[stackTop] = (neighbor < objectCount) ? fwdRefs.start(neighbor) : 0;
+                stackV[stackTop] = superRoot;
+                stackE[stackTop] = 0;
+
+                while (stackTop >= 0) {
+                    int  v = stackV[stackTop];
+                    long e = stackE[stackTop];
+
+                    int  neighbor;
+                    long nextE;
+                    if (v == superRoot) {
+                        if (e >= gcRoots.length) { stackTop--; continue; }
+                        neighbor = gcRoots[(int) e];
+                        nextE    = e + 1;
+                    } else {
+                        long end = fwdRefs.end(v);
+                        if (e >= end) { stackTop--; continue; }
+                        neighbor = fwdRefs.edge(e);
+                        nextE    = e + 1;
+                    }
+
+                    stackE[stackTop] = nextE;
+
+                    if (neighbor < 0 || neighbor >= objectCount || visited.get(neighbor)) continue;
+
+                    visited.set(neighbor);
+                    dfsNum.writeLong(neighbor, dfsCounter);
+                    dfsVertex.writeInt((int) dfsCounter, neighbor);
+                    dfsParent.writeInt(neighbor, (v == superRoot) ? -1 : v);
+                    dfsCounter++;
+
+                    stackTop++;
+                    if (stackTop >= stackV.length) { stackV = grow(stackV); stackE = growL(stackE); }
+                    stackV[stackTop] = neighbor;
+                    stackE[stackTop] = (neighbor < objectCount) ? fwdRefs.start(neighbor) : 0;
+                }
             }
+
+            // Truncate dfs-vertex.bin to actual reachable count before moving
+            int reachableCount = (int) dfsCounter;
+            // The file is pre-allocated at objectCount ints; write only reachableCount entries
+            // by writing them sequentially from a sequential scan of dfsVertex
+            writeThenMove(indexDir.resolve("dfs-vertex.bin"), tempDir.resolve("dfs-vertex.trunc.tmp"), out -> {
+                for (int i = 0; i < reachableCount; i++) out.writeInt(dfsVertex.readInt(i));
+            });
         }
 
-        // Write dfs-num.bin (long[] — UNREACHABLE for vertices not visited)
-        writeThenMove(indexDir.resolve("dfs-num.bin"), tempDir.resolve("dfs-num.bin.tmp"), out -> {
-            for (long n : dfsNum) out.writeLong(n);
-        });
-
-        // Write dfs-vertex.bin (int[] of length = reachable vertex count = dfsCounter)
-        int reachableCount = (int) dfsCounter;
-        writeThenMove(indexDir.resolve("dfs-vertex.bin"), tempDir.resolve("dfs-vertex.bin.tmp"), out -> {
-            for (int i = 0; i < reachableCount; i++) out.writeInt(dfsVertex[i]);
-        });
-
-        // Write dfs-parent.bin (int[objectCount], -1 for unreachable/root)
-        writeThenMove(indexDir.resolve("dfs-parent.bin"), tempDir.resolve("dfs-parent.bin.tmp"), out -> {
-            for (int p : dfsParent) out.writeInt(p);
-        });
+        Files.deleteIfExists(tmpDfsVertex); // superseded by the truncated version written above
+        Files.move(tmpDfsNum,    indexDir.resolve("dfs-num.bin"),
+                   StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        Files.move(tmpDfsParent, indexDir.resolve("dfs-parent.bin"),
+                   StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
     }
 
     private static int[] loadGcRoots(Path path) throws IOException {

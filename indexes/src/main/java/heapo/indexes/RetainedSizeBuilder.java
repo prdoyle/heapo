@@ -1,11 +1,11 @@
 package heapo.indexes;
 
 import heapo.util.ExternalMergeSort;
+import heapo.util.IndexFile;
 import heapo.unpack.UnpackedHeap;
 
 import java.io.*;
 import java.nio.file.*;
-import java.util.Arrays;
 
 /**
  * Builds retained-size.bin, dominator-children CSR, retained-size-rank.bin,
@@ -22,107 +22,137 @@ public final class RetainedSizeBuilder {
         int  objectCount = heap.objectCount();
         Path indexDir    = heap.indexDir();
 
-        int[] idom        = loadInts( indexDir.resolve("idom.bin"),         objectCount);
-        int[] shallowSize = loadInts( indexDir.resolve("shallow-size.bin"),  objectCount);
-        int   reachable   = (int)(Files.size(indexDir.resolve("dfs-vertex.bin")) / 4);
-        int[] dfsVertex   = loadInts( indexDir.resolve("dfs-vertex.bin"),    reachable);
+        int reachable = (int)(Files.size(indexDir.resolve("dfs-vertex.bin")) / 4);
 
-        // ── 1. Build dominator-children CSR ──────────────────────────────────
+        // Temp mmap'd files
+        Path tmpChildCount   = tempDir.resolve("rs-childCount.bin.tmp");
+        Path tmpChildOffsets = tempDir.resolve("rs-childOffsets.bin.tmp");
+        Path tmpCursor       = tempDir.resolve("rs-cursor.bin.tmp");
+        Path tmpChildEdges   = tempDir.resolve("rs-childEdges.bin.tmp");
+        Path tmpRetained     = tempDir.resolve("rs-retained.bin.tmp");
+        Path tmpRank         = tempDir.resolve("rs-rank.bin.tmp");
+        Path tmpSubtree      = tempDir.resolve("rs-subtree.bin.tmp");
 
-        // Count children per vertex
-        int[] childCount = new int[objectCount];
-        for (int v = 0; v < objectCount; v++) {
-            if (idom[v] >= 0) childCount[idom[v]]++;
-        }
-        // Prefix-sum offsets
-        long[] childOffsets = new long[objectCount + 1];
-        for (int i = 0; i < objectCount; i++) childOffsets[i + 1] = childOffsets[i] + childCount[i];
+        try (var idom        = IndexFile.openRead(indexDir.resolve("idom.bin"));
+             var shallowSize = IndexFile.openRead(indexDir.resolve("shallow-size.bin"));
+             var dfsVertex   = IndexFile.openRead(indexDir.resolve("dfs-vertex.bin"))) {
 
-        // Fill children arrays
-        int[] childEdges  = new int[(int) childOffsets[objectCount]];
-        int[] cursor      = childCount.clone();  // re-use as write cursors
-        for (int i = 0; i < objectCount; i++) cursor[i] = (int) childOffsets[i];
-        for (int v = 0; v < objectCount; v++) {
-            if (idom[v] >= 0) childEdges[cursor[idom[v]]++] = v;
-        }
+            // ── 1. Build dominator-children CSR ──────────────────────────────
 
-        writeThenMove(indexDir.resolve("dominator-children-offsets.bin"),
-                      tempDir.resolve("dc-offsets.tmp"), out -> {
-            for (long off : childOffsets) out.writeLong(off);
-        });
-        writeThenMove(indexDir.resolve("dominator-children-edges.bin"),
-                      tempDir.resolve("dc-edges.tmp"), out -> {
-            for (int e : childEdges) out.writeInt(e);
-        });
+            // Count children per vertex
+            try (var childCount = IndexFile.create(tmpChildCount, objectCount, 4)) {
+                for (int v = 0; v < objectCount; v++) {
+                    int idomV = idom.readInt(v);
+                    if (idomV >= 0) childCount.writeInt(idomV, childCount.readInt(idomV) + 1);
+                }
 
-        // ── 2. Compute retained sizes (bottom-up in reverse DFS order) ───────
+                // Prefix-sum offsets
+                try (var childOffsets = IndexFile.create(tmpChildOffsets, (long) objectCount + 1, 8)) {
+                    for (int i = 0; i < objectCount; i++)
+                        childOffsets.writeLong(i + 1, childOffsets.readLong(i) + childCount.readInt(i));
 
-        long[] retained = new long[objectCount];
-        // Initialize with shallow sizes (convert from shifted value back to bytes)
-        for (int v = 0; v < objectCount; v++) {
-            retained[v] = (long) shallowSize[v] * 8L;
-        }
+                    // Scatter children
+                    long edgeCount = childOffsets.readLong(objectCount);
+                    try (var cursor     = IndexFile.create(tmpCursor, objectCount, 4);
+                         var childEdges = IndexFile.create(tmpChildEdges, edgeCount, 4)) {
+                        for (int i = 0; i < objectCount; i++)
+                            cursor.writeInt(i, (int) childOffsets.readLong(i));
+                        for (int v = 0; v < objectCount; v++) {
+                            int idomV = idom.readInt(v);
+                            if (idomV >= 0) {
+                                int pos = cursor.readInt(idomV);
+                                childEdges.writeInt(pos, v);
+                                cursor.writeInt(idomV, pos + 1);
+                            }
+                        }
+                    }
+                    Files.deleteIfExists(tmpCursor);
 
-        // Process in reverse DFS order: leaves before parents
-        for (int i = reachable - 1; i >= 0; i--) {
-            int v = dfsVertex[i];
-            if (idom[v] >= 0) retained[idom[v]] += retained[v];
-        }
-
-        writeThenMove(indexDir.resolve("retained-size.bin"),
-                      tempDir.resolve("retained.tmp"), out -> {
-            for (long r : retained) out.writeLong(r);
-        });
-
-        // ── 3. Retained-size rank (external sort) ────────────────────────────
-
-        Path rankScratch = tempDir.resolve("rank-scratch.bin");
-        Path rankSorted  = tempDir.resolve("rank-sorted.bin");
-
-        // Emit (retainedSize: long, denseId: int) = 12-byte records
-        try (var out = new DataOutputStream(new BufferedOutputStream(
-                Files.newOutputStream(rankScratch)))) {
-            for (int v = 0; v < objectCount; v++) {
-                out.writeLong(retained[v]);
-                out.writeInt(v);
+                    // Write dominator-children CSR
+                    writeThenMove(indexDir.resolve("dominator-children-offsets.bin"),
+                                  tempDir.resolve("dc-offsets.tmp"), out -> {
+                        for (long i = 0; i <= objectCount; i++) out.writeLong(childOffsets.readLong(i));
+                    });
+                }
             }
-        }
-        // Sort descending by retained size (negate for ascending sort)
-        ExternalMergeSort.sort(rankScratch, rankSorted, tempDir, 12,
-            (a, b) -> Long.compare(b.getLong(0), a.getLong(0)),  // descending
-            ExternalMergeSort.DEFAULT_MAX_RAM_BYTES);
-        Files.delete(rankScratch);
+            Files.deleteIfExists(tmpChildCount);
+            writeThenMove(indexDir.resolve("dominator-children-edges.bin"),
+                          tempDir.resolve("dc-edges.tmp"), out -> {
+                try (var childEdges = IndexFile.openRead(tmpChildEdges)) {
+                    for (long i = 0; i < childEdges.intCount(); i++) out.writeInt(childEdges.readInt(i));
+                }
+            });
+            Files.deleteIfExists(tmpChildEdges);
 
-        // rank[v] = position in sorted order
-        int[] rank = new int[objectCount];
-        try (var in = new DataInputStream(new BufferedInputStream(
-                Files.newInputStream(rankSorted)))) {
-            for (int pos = 0; pos < objectCount; pos++) {
-                in.readLong(); // retained size
-                int v = in.readInt();
-                rank[v] = pos;
+            // ── 2. Compute retained sizes (bottom-up in reverse DFS order) ───
+
+            try (var retained = IndexFile.create(tmpRetained, objectCount, 8)) {
+                for (int v = 0; v < objectCount; v++)
+                    retained.writeLong(v, (long) shallowSize.readInt(v) * 8L);
+
+                for (int i = reachable - 1; i >= 0; i--) {
+                    int v     = dfsVertex.readInt(i);
+                    int idomV = idom.readInt(v);
+                    if (idomV >= 0) retained.writeLong(idomV, retained.readLong(idomV) + retained.readLong(v));
+                }
+
+                writeThenMove(indexDir.resolve("retained-size.bin"),
+                              tempDir.resolve("retained-final.tmp"), out -> {
+                    for (int v = 0; v < objectCount; v++) out.writeLong(retained.readLong(v));
+                });
+
+                // ── 3. Retained-size rank (external sort) ──────────────────────
+
+                Path rankScratch = tempDir.resolve("rank-scratch.bin");
+                Path rankSorted  = tempDir.resolve("rank-sorted.bin");
+
+                try (var out = new DataOutputStream(new BufferedOutputStream(Files.newOutputStream(rankScratch)))) {
+                    for (int v = 0; v < objectCount; v++) {
+                        out.writeLong(retained.readLong(v));
+                        out.writeInt(v);
+                    }
+                }
+                ExternalMergeSort.sort(rankScratch, rankSorted, tempDir, 12,
+                    (a, b) -> Long.compare(b.getLong(0), a.getLong(0)),
+                    ExternalMergeSort.DEFAULT_MAX_RAM_BYTES);
+                Files.delete(rankScratch);
+
+                try (var rank = IndexFile.create(tmpRank, objectCount, 4)) {
+                    try (var in = new DataInputStream(new BufferedInputStream(Files.newInputStream(rankSorted)))) {
+                        for (int pos = 0; pos < objectCount; pos++) {
+                            in.readLong();
+                            rank.writeInt(in.readInt(), pos);
+                        }
+                    }
+                    Files.delete(rankSorted);
+
+                    writeThenMove(indexDir.resolve("retained-size-rank.bin"),
+                                  tempDir.resolve("rank.tmp"), out -> {
+                        for (int v = 0; v < objectCount; v++) out.writeInt(rank.readInt(v));
+                    });
+                }
+                Files.deleteIfExists(tmpRank);
             }
+            Files.deleteIfExists(tmpRetained);
+
+            // ── 4. Dominator subtree size ───────────────────────────────────────
+
+            try (var subtreeSize = IndexFile.create(tmpSubtree, objectCount, 4)) {
+                for (int v = 0; v < objectCount; v++) subtreeSize.writeInt(v, 1);
+                for (int i = reachable - 1; i >= 0; i--) {
+                    int v     = dfsVertex.readInt(i);
+                    int idomV = idom.readInt(v);
+                    if (idomV >= 0)
+                        subtreeSize.writeInt(idomV, subtreeSize.readInt(idomV) + subtreeSize.readInt(v));
+                }
+
+                writeThenMove(indexDir.resolve("dominator-subtree-size.bin"),
+                              tempDir.resolve("subtree.tmp"), out -> {
+                    for (int v = 0; v < objectCount; v++) out.writeInt(subtreeSize.readInt(v));
+                });
+            }
+            Files.deleteIfExists(tmpSubtree);
         }
-        Files.delete(rankSorted);
-
-        writeThenMove(indexDir.resolve("retained-size-rank.bin"),
-                      tempDir.resolve("rank.tmp"), out -> {
-            for (int r : rank) out.writeInt(r);
-        });
-
-        // ── 4. Dominator subtree size ─────────────────────────────────────────
-
-        int[] subtreeSize = new int[objectCount];
-        Arrays.fill(subtreeSize, 1); // each vertex counts itself
-        for (int i = reachable - 1; i >= 0; i--) {
-            int v = dfsVertex[i];
-            if (idom[v] >= 0) subtreeSize[idom[v]] += subtreeSize[v];
-        }
-
-        writeThenMove(indexDir.resolve("dominator-subtree-size.bin"),
-                      tempDir.resolve("subtree.tmp"), out -> {
-            for (int s : subtreeSize) out.writeInt(s);
-        });
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -134,13 +164,5 @@ public final class RetainedSizeBuilder {
             w.write(out);
         }
         Files.move(tmp, dest, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
-    }
-
-    private static int[] loadInts(Path path, int count) throws IOException {
-        int[] arr = new int[count];
-        try (var in = new DataInputStream(new BufferedInputStream(Files.newInputStream(path)))) {
-            for (int i = 0; i < count; i++) arr[i] = in.readInt();
-        }
-        return arr;
     }
 }

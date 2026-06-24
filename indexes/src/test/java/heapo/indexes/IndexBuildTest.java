@@ -1,5 +1,6 @@
 package heapo.indexes;
 
+import heapo.util.IndexFile;
 import heapo.unpack.HprofReader;
 import heapo.unpack.BaseHprofHandler;
 import heapo.unpack.Unpacker;
@@ -260,6 +261,71 @@ class IndexBuildTest {
         }
     }
 
+    // ── GC roots ──────────────────────────────────────────────────────────────
+
+    @Test
+    void gcRootsIsNonEmpty() throws Exception {
+        try (var roots = knownReg.openGcRoots()) {
+            long count = roots.intCount();
+            assertTrue(count > 0, "Expected at least one GC root");
+            int objectCount = knownHeap.objectCount();
+            for (long i = 0; i < count; i++) {
+                int denseId = roots.readInt(i);
+                assertTrue(denseId >= 0 && denseId < objectCount,
+                    "GC root at index " + i + " has invalid dense ID: " + denseId);
+            }
+        }
+    }
+
+    // ── Superclass index ──────────────────────────────────────────────────────
+
+    @Test
+    void superClassOfIsCorrectForDeepHierarchy() throws Exception {
+        int derivedId = findClassDenseId(knownHeap, "heapo/samples/KnownObjects$DeepDerived");
+        int middleId  = findClassDenseId(knownHeap, "heapo/samples/KnownObjects$DeepMiddle");
+        int baseId    = findClassDenseId(knownHeap, "heapo/samples/KnownObjects$DeepBase");
+        assertTrue(derivedId >= 0, "Should find DeepDerived class");
+        assertTrue(middleId  >= 0, "Should find DeepMiddle class");
+        assertTrue(baseId    >= 0, "Should find DeepBase class");
+
+        try (var superOf = knownReg.openSuperClassOf()) {
+            assertEquals(middleId, superOf.readInt(derivedId),
+                "DeepDerived's superclass should be DeepMiddle");
+            assertEquals(baseId, superOf.readInt(middleId),
+                "DeepMiddle's superclass should be DeepBase");
+        }
+    }
+
+    // ── Object array / primitive array type flags ─────────────────────────────
+
+    @Test
+    void isObjArrayFileSizeMatchesObjectCountAndHasAtLeastOneEntry() throws Exception {
+        try (var isObjArray = knownReg.openIsObjArray()) {
+            assertNotNull(isObjArray, "is-obj-array.bin should exist");
+            assertEquals((long) knownHeap.objectCount(), isObjArray.byteSize(),
+                "is-obj-array.bin should have one byte per object");
+            boolean found = false;
+            for (long i = 0; i < isObjArray.byteSize(); i++) {
+                if (isObjArray.readByteAt(i) != 0) { found = true; break; }
+            }
+            assertTrue(found, "Expected at least one object array in the heap");
+        }
+    }
+
+    @Test
+    void primArrayTypesFileSizeMatchesObjectCountAndHasAtLeastOneEntry() throws Exception {
+        try (var primTypes = knownReg.openPrimArrayTypes()) {
+            assertNotNull(primTypes, "prim-array-types.bin should exist");
+            assertEquals((long) knownHeap.objectCount(), primTypes.byteSize(),
+                "prim-array-types.bin should have one byte per object");
+            boolean found = false;
+            for (long i = 0; i < primTypes.byteSize(); i++) {
+                if (primTypes.readByteAt(i) != 0) { found = true; break; }
+            }
+            assertTrue(found, "Expected at least one primitive array in the heap");
+        }
+    }
+
     // ── Helper: find class dense ID by internal HPROF name ───────────────────
 
     static int findClassDenseId(UnpackedHeap heap, String hprofClassName) throws IOException {
@@ -281,28 +347,9 @@ class IndexBuildTest {
             heap == knownHeap ? "known-objects.hprof" : "deep-chain.hprof")).read(handler);
 
         if (handler.classRawId < 0) return -1;
-        long[] sortedRawIds = loadLongFile(heap.indexDir().resolve("raw-id-lookup-sorted.bin"));
-        int[]  denseIds     = loadIntFile( heap.indexDir().resolve("raw-id-lookup-dense.bin"));
-        return Unpacker.resolveDenseId(handler.classRawId, sortedRawIds, denseIds);
-    }
-
-    private static long[] loadLongFile(Path p) throws IOException {
-        int count = (int)(Files.size(p) / 8);
-        long[] arr = new long[count];
-        try (var in = new java.io.DataInputStream(new java.io.BufferedInputStream(
-                Files.newInputStream(p)))) {
-            for (int i = 0; i < count; i++) arr[i] = in.readLong();
+        try (var sortedRawIds = IndexFile.openRead(heap.indexDir().resolve("raw-id-lookup-sorted.bin"));
+             var denseIds     = IndexFile.openRead(heap.indexDir().resolve("raw-id-lookup-dense.bin"))) {
+            return Unpacker.resolveDenseId(handler.classRawId, sortedRawIds, denseIds);
         }
-        return arr;
-    }
-
-    private static int[] loadIntFile(Path p) throws IOException {
-        int count = (int)(Files.size(p) / 4);
-        int[] arr = new int[count];
-        try (var in = new java.io.DataInputStream(new java.io.BufferedInputStream(
-                Files.newInputStream(p)))) {
-            for (int i = 0; i < count; i++) arr[i] = in.readInt();
-        }
-        return arr;
     }
 }

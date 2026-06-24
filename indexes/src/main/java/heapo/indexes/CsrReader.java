@@ -1,5 +1,7 @@
 package heapo.indexes;
 
+import heapo.util.IndexFile;
+
 import java.io.IOException;
 import java.nio.file.Path;
 

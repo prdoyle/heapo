@@ -1,4 +1,4 @@
-package heapo.indexes;
+package heapo.util;
 
 import java.io.IOException;
 import java.lang.foreign.Arena;
@@ -76,7 +76,9 @@ public final class IndexFile implements AutoCloseable {
     public void writeLong(long index, long value) { segment.set(LONG_BE, index * 8L, value); }
 
     /** Read a single byte at an arbitrary byte offset (e.g. within a field-value record). */
-    public byte  readByteAt(long byteOffset)  { return segment.get(BYTE_LAYOUT, byteOffset); }
+    public byte  readByteAt(long byteOffset)              { return segment.get(BYTE_LAYOUT, byteOffset); }
+    /** Write a single byte at an arbitrary byte offset (e.g. one-byte-per-element arrays). */
+    public void  writeByteAt(long byteOffset, byte value) { segment.set(BYTE_LAYOUT, byteOffset, value); }
     /** Read a big-endian short at an arbitrary byte offset. */
     public short readShortAt(long byteOffset) { return segment.get(SHORT_BE_UA, byteOffset); }
     /** Read a big-endian int at an arbitrary byte offset. */
