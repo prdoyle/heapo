@@ -17,6 +17,8 @@ Analyse the heap dump at `$ARGUMENTS`. If no path was provided, ask the user for
 
 All commands accept `-d <dir>` / `--heap-dir <dir>` to specify where indexes are stored (default: `<dump>.d/` next to the HPROF file). Indexes are cached; subsequent runs reuse them and are fast.
 
+Pass the file path exactly as the user provides it — **do not unzip** a `.zip` file before passing it to heapo. heapo reads the file directly and places its index directory at `<path>.d/`.
+
 ## Result sigils
 
 | Sigil | Meaning |
