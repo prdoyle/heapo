@@ -192,8 +192,10 @@ public final class QueryEngine {
 
         // Fill in String and Thread descriptions
         boolean hasThreads = path.stream().anyMatch(n -> "java.lang.Thread".equals(n.className()));
-        int threadNameRefPos = hasThreads ? threadNameRefPos(names, registry) : -1;
+        int stringValueRefPos = hasStrings ? stringValueRefPos(names, registry) : 0;
+        int threadNameRefPos  = hasThreads ? threadNameRefPos(names, registry)  : -1;
         if ((hasStrings || threadNameRefPos >= 0) && registry.hasPrimArrayIndex()) {
+            final int valPos  = stringValueRefPos;
             final int namePos = threadNameRefPos;
             try (var fwd         = registry.openForwardRefs();
                  var primOffsets = registry.openPrimArrayOffsets();
@@ -203,9 +205,9 @@ public final class QueryEngine {
                     if (node.description() != null) continue;
                     String desc = null;
                     if (hasStrings && "java.lang.String".equals(node.className())) {
-                        desc = readStringContent(node.denseId(), fwd, primOffsets, primData);
+                        desc = readStringContent(node.denseId(), valPos, fwd, primOffsets, primData);
                     } else if (namePos >= 0 && "java.lang.Thread".equals(node.className())) {
-                        desc = readRefFieldString(node.denseId(), namePos, fwd, primOffsets, primData);
+                        desc = readRefFieldString(node.denseId(), namePos, valPos, fwd, primOffsets, primData);
                     }
                     if (desc != null)
                         path.set(i, new ExplainNode(node.denseId(), node.className(),
@@ -285,11 +287,12 @@ public final class QueryEngine {
             }
         }
 
-        // Is it a String? Try reading its value field.
+        // Is it a String? Try reading its value field using the schema to find the right ref.
+        int valRefPos = stringValueRefPos(ClassNameIndex.load(heap), registry);
         try (var fwd     = registry.openForwardRefs();
              var offsets = registry.openPrimArrayOffsets();
              var data    = registry.openPrimArrayData()) {
-            String s = readStringContentFull(denseId, fwd, offsets, data);
+            String s = readStringContentFull(denseId, valRefPos, fwd, offsets, data);
             if (s != null) return s;
         }
 
@@ -297,23 +300,22 @@ public final class QueryEngine {
     }
 
     /** Like readStringContent but without truncation. */
-    private static String readStringContentFull(int denseId, CsrReader fwd,
+    private static String readStringContentFull(int denseId, int valueRefPos, CsrReader fwd,
                                                   IndexFile primOffsets, IndexFile primData) {
         long start = fwd.start(denseId);
         long end   = fwd.end(denseId);
-        for (long pos = start; pos < end; pos++) {
-            int byteArrayId = fwd.edge(pos);
-            long offset = primOffsets.readLong(byteArrayId);
-            if (offset < 0) continue;
+        if (start + valueRefPos >= end) return null;
+        int byteArrayId = fwd.edge(start + valueRefPos);
 
-            int length = primData.readIntAt(offset);
-            if (length <= 0) return length == 0 ? "" : null;
+        long offset = primOffsets.readLong(byteArrayId);
+        if (offset < 0) return null;
 
-            byte[] bytes = new byte[length];
-            for (int i = 0; i < length; i++) bytes[i] = primData.readByteAt(offset + 4 + i);
-            return new String(bytes, StandardCharsets.ISO_8859_1);
-        }
-        return null;
+        int length = primData.readIntAt(offset);
+        if (length <= 0) return length == 0 ? "" : null;
+
+        byte[] bytes = new byte[length];
+        for (int i = 0; i < length; i++) bytes[i] = primData.readByteAt(offset + 4 + i);
+        return new String(bytes, StandardCharsets.ISO_8859_1);
     }
 
     private static List<FieldRow> inspectPrimArray(IndexRegistry registry, int denseId, int elemType)
@@ -461,8 +463,10 @@ public final class QueryEngine {
             }
         }
 
-        int threadNameRefPos = hasThreads ? threadNameRefPos(names, registry) : -1;
+        int stringValueRefPos = hasStrings ? stringValueRefPos(names, registry) : 0;
+        int threadNameRefPos  = hasThreads ? threadNameRefPos(names, registry)  : -1;
         if ((hasStrings || threadNameRefPos >= 0) && registry.hasPrimArrayIndex()) {
+            final int valPos  = stringValueRefPos;
             final int namePos = threadNameRefPos;
             try (var fwd        = registry.openForwardRefs();
                  var primOff    = registry.openPrimArrayOffsets();
@@ -472,9 +476,9 @@ public final class QueryEngine {
                     if (!r.isObject() || r.description() != null) continue;
                     String desc = null;
                     if (hasStrings && "java.lang.String".equals(r.className()))
-                        desc = readStringContent(r.refDenseId(), fwd, primOff, primData);
+                        desc = readStringContent(r.refDenseId(), valPos, fwd, primOff, primData);
                     else if (namePos >= 0 && "java.lang.Thread".equals(r.className()))
-                        desc = readRefFieldString(r.refDenseId(), namePos, fwd, primOff, primData);
+                        desc = readRefFieldString(r.refDenseId(), namePos, valPos, fwd, primOff, primData);
                     if (desc != null)
                         rows.set(i, new FieldRow(r.fieldName(), r.refDenseId(), false, r.className(),
                                                  r.retainedSize(), r.shallowSize(), desc, null, 0));
@@ -955,6 +959,9 @@ public final class QueryEngine {
 
         if (!registry.hasPrimArrayIndex()) return result;
 
+        var names = ClassNameIndex.load(heap);
+        int valueRefPos = stringValueRefPos(names, registry);
+
         try (var il            = registry.openInstanceList();
              var isObjArrayFile = registry.openIsObjArray();
              var fv            = registry.openFieldValues(classDenseId);
@@ -972,7 +979,7 @@ public final class QueryEngine {
                 int refDenseId = fv.readIntAt((long) idx * recordSize + byteOff);
                 idx++;
                 if (refDenseId == 0) continue;  // null field
-                String val = readStringContent(refDenseId, fwd, primOff, primData);
+                String val = readStringContent(refDenseId, valueRefPos, fwd, primOff, primData);
                 if (val != null && matchesString(val, targetValue, leadingStar, trailingStar))
                     result.set(denseId);
             }
@@ -1182,9 +1189,11 @@ public final class QueryEngine {
             if ("java.lang.Thread".equals(row.className())) hasThreads = true;
         }
 
-        int threadNameRefPos = hasThreads ? threadNameRefPos(names, registry) : -1;
+        int stringValueRefPos = hasStrings ? stringValueRefPos(names, registry) : 0;
+        int threadNameRefPos  = hasThreads ? threadNameRefPos(names, registry)  : -1;
 
         if ((hasStrings || threadNameRefPos >= 0) && registry.hasPrimArrayIndex()) {
+            final int valPos  = stringValueRefPos;
             final int namePos = threadNameRefPos;
             try (var fwd         = registry.openForwardRefs();
                  var primOffsets = registry.openPrimArrayOffsets();
@@ -1192,10 +1201,10 @@ public final class QueryEngine {
                 for (int i = 0; i < rows.size(); i++) {
                     TopNRow row = rows.get(i);
                     if (hasStrings && "java.lang.String".equals(row.className())) {
-                        String content = readStringContent(row.denseId(), fwd, primOffsets, primData);
+                        String content = readStringContent(row.denseId(), valPos, fwd, primOffsets, primData);
                         if (content != null) rows.set(i, rowWithDesc(row, content));
                     } else if (namePos >= 0 && "java.lang.Thread".equals(row.className())) {
-                        String name = readRefFieldString(row.denseId(), namePos, fwd, primOffsets, primData);
+                        String name = readRefFieldString(row.denseId(), namePos, valPos, fwd, primOffsets, primData);
                         if (name != null) rows.set(i, rowWithDesc(row, name));
                     }
                 }
@@ -1210,26 +1219,20 @@ public final class QueryEngine {
                            row.retainedSize(), row.shallowSize(), desc);
     }
 
-    private static String readStringContent(int denseId, CsrReader fwd,
-                                             IndexFile primOffsets, IndexFile primData) {
-        long start = fwd.start(denseId);
-        long end   = fwd.end(denseId);
-        // Scan all forward refs looking for a primitive array (handles JVMs where
-        // String.value is not the first reference field, e.g. additional hidden fields).
-        for (long pos = start; pos < end; pos++) {
-            int byteArrayId = fwd.edge(pos);
-            long offset = primOffsets.readLong(byteArrayId);
-            if (offset < 0) continue;  // not a prim array — try next ref
-
-            int length = primData.readIntAt(offset);
-            if (length <= 0) return length == 0 ? "" : null;
-
-            byte[] bytes = new byte[length];
-            for (int i = 0; i < length; i++) bytes[i] = primData.readByteAt(offset + 4 + i);
-            String s = new String(bytes, StandardCharsets.ISO_8859_1);
-            return s.length() > 50 ? s.substring(0, 20) + "..." + s.substring(s.length() - 20) : s;
+    /** Returns the ordinal position of {@code String.value} among TYPE_OBJECT fields (0 if not found). */
+    private static int stringValueRefPos(ClassNameIndex names, IndexRegistry registry)
+            throws IOException {
+        int stringClassDid = names.resolve("java.lang.String");
+        if (stringClassDid < 0) return 0;
+        var schema = registry.loadFieldSchema(stringClassDid);
+        int objCount = 0;
+        for (var field : schema) {
+            if (field.typeCode() == HprofReader.TYPE_OBJECT) {
+                if ("value".equals(field.name())) return objCount;
+                objCount++;
+            }
         }
-        return null;
+        return 0;
     }
 
     /** Returns the object-ref position (among TYPE_OBJECT fields) of Thread.name, or -1. */
@@ -1248,14 +1251,38 @@ public final class QueryEngine {
         return -1;
     }
 
+    /**
+     * Reads the string content of a String object at {@code denseId}.
+     * {@code valueRefPos} is the ordinal position of the {@code value} field among
+     * TYPE_OBJECT fields in String's schema (see {@link #stringValueRefPos}).
+     */
+    private static String readStringContent(int denseId, int valueRefPos, CsrReader fwd,
+                                             IndexFile primOffsets, IndexFile primData) {
+        long start = fwd.start(denseId);
+        long end   = fwd.end(denseId);
+        if (start + valueRefPos >= end) return null;
+        int byteArrayId = fwd.edge(start + valueRefPos);
+
+        long offset = primOffsets.readLong(byteArrayId);
+        if (offset < 0) return null;
+
+        int length = primData.readIntAt(offset);
+        if (length <= 0) return length == 0 ? "" : null;
+
+        byte[] bytes = new byte[length];
+        for (int i = 0; i < length; i++) bytes[i] = primData.readByteAt(offset + 4 + i);
+        String s = new String(bytes, StandardCharsets.ISO_8859_1);
+        return s.length() > 50 ? s.substring(0, 20) + "..." + s.substring(s.length() - 20) : s;
+    }
+
     /** Follows the object-ref at position {@code refPos} from {@code denseId} and reads it as a String. */
-    private static String readRefFieldString(int denseId, int refPos, CsrReader fwd,
+    private static String readRefFieldString(int denseId, int refPos, int valueRefPos, CsrReader fwd,
                                               IndexFile primOffsets, IndexFile primData) {
         long start = fwd.start(denseId);
         long end   = fwd.end(denseId);
         if (start + refPos >= end) return null;
         int stringDid = fwd.edge(start + refPos);
-        return readStringContent(stringDid, fwd, primOffsets, primData);
+        return readStringContent(stringDid, valueRefPos, fwd, primOffsets, primData);
     }
 
     private static boolean containsGlob(String s) {

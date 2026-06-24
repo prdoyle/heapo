@@ -103,47 +103,38 @@ class QueryEngineTest {
     }
 
     @Test
-    void parserWhereStringPatternWithoutEquals() {
-        // Issue 1: string patterns should not require explicit = operator
-        var result = DslParser.parse("CLASS com.example.Thread WHERE name *\"write\"* COUNT");
-        assertInstanceOf(DslParser.Complete.class, result, "Should parse without = operator");
-        var p = (DslParser.Pipeline) ((DslParser.Complete) result).action();
-        assertEquals(1, p.filters().size());
+    void parserWhereStringPatternRequiresEquals() {
+        // Issue 1 fix: = is required; SKILL.md now documents this correctly
+        var withEq = DslParser.parse("CLASS com.example.Thread WHERE name = *\"write\"* COUNT");
+        assertInstanceOf(DslParser.Complete.class, withEq, "Should parse with = operator");
+        var p = (DslParser.Pipeline) ((DslParser.Complete) withEq).action();
         var f = (DslParser.WhereStringFilter) p.filters().get(0);
         assertEquals("name", f.field());
         assertEquals("write", f.value());
-        assertTrue(f.leadingStar());
-        assertTrue(f.trailingStar());
-    }
-
-    @Test
-    void parserWhereStringPatternWithEquals() {
-        // Explicit = operator should still work
-        var result = DslParser.parse("CLASS com.example.Thread WHERE name = *\"write\"* COUNT");
-        assertInstanceOf(DslParser.Complete.class, result, "Should parse with = operator");
-        var p = (DslParser.Pipeline) ((DslParser.Complete) result).action();
-        var f = (DslParser.WhereStringFilter) p.filters().get(0);
-        assertEquals("write", f.value());
         assertTrue(f.leadingStar() && f.trailingStar());
+
+        // Without = is an error
+        var noEq = DslParser.parse("CLASS com.example.Thread WHERE name *\"write\"* COUNT");
+        assertInstanceOf(DslParser.Invalid.class, noEq, "Should reject pattern without = operator");
     }
 
     @Test
     void parserWhereStringPatternAllForms() {
         // exact match
         var exact = (DslParser.Pipeline) ((DslParser.Complete)
-            DslParser.parse("ALL WHERE name \"exact\" COUNT")).action();
+            DslParser.parse("ALL WHERE name = \"exact\" COUNT")).action();
         var fe = (DslParser.WhereStringFilter) exact.filters().get(0);
         assertFalse(fe.leadingStar()); assertFalse(fe.trailingStar()); assertEquals("exact", fe.value());
 
         // prefix match
         var prefix = (DslParser.Pipeline) ((DslParser.Complete)
-            DslParser.parse("ALL WHERE name \"pre\"* COUNT")).action();
+            DslParser.parse("ALL WHERE name = \"pre\"* COUNT")).action();
         var fp = (DslParser.WhereStringFilter) prefix.filters().get(0);
         assertFalse(fp.leadingStar()); assertTrue(fp.trailingStar()); assertEquals("pre", fp.value());
 
         // suffix match
         var suffix = (DslParser.Pipeline) ((DslParser.Complete)
-            DslParser.parse("ALL WHERE name *\"suf\" COUNT")).action();
+            DslParser.parse("ALL WHERE name = *\"suf\" COUNT")).action();
         var fs = (DslParser.WhereStringFilter) suffix.filters().get(0);
         assertTrue(fs.leadingStar()); assertFalse(fs.trailingStar()); assertEquals("suf", fs.value());
     }

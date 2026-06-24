@@ -164,8 +164,8 @@ ALL RETAINED BY i123 REFERENCING i456 TOP 10
 | `REFERENCING <source>` | Keep objects that have a direct outgoing reference to any object in source |
 | `REFERENCED BY <source>` | Keep objects directly referenced (pointed to) by any object in source |
 | `REACHABLE FROM <source>` | Keep objects transitively reachable (by following forward refs) from any object in source |
-| `WHERE <field> <op> <value>` | Keep objects whose field satisfies the comparison. Class context required (use `CLASS <class>` or add `OF TYPE <class>` before WHERE). Value is a number or `true`/`false`. For string-typed fields use a string pattern instead of `<op> <value>`. |
-| `WHERE <field> <pattern>` | Keep objects whose String field matches a pattern. `"exact"` (exact match), `"prefix"*` (startsWith), `*"suffix"` (endsWith), `*"sub"*` (contains). No spaces or backslashes inside quotes. The `=` operator is optional: `WHERE name *"write"*` and `WHERE name = *"write"*` are equivalent. |
+| `WHERE <field> <op> <value>` | Keep objects whose primitive field satisfies the comparison. Class context required (use `CLASS <class>` or add `OF TYPE <class>` before WHERE). Value is a number or `true`/`false`. |
+| `WHERE <field> = <pattern>` | Keep objects whose String field matches a pattern. Requires `=`. `"exact"` (exact match), `"prefix"*` (startsWith), `*"suffix"` (endsWith), `*"sub"*` (contains). No spaces or backslashes inside quotes. Example: `WHERE name = *"write"*` |
 
 **Terminals** (end the pipeline):
 

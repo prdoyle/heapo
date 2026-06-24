@@ -259,20 +259,11 @@ public final class DslParser {
                 i++;
                 if (i >= t.length) return incomplete(List.of(COMPLETE_IDENT));
                 String field = t[i++];
-                if (i >= t.length) return incomplete(List.of("=", ">", ">=", "<", "<=", "*\"<string>\"*", "\"<string>\""));
-                // String patterns may appear directly after the field name (implied =) or after explicit =
-                boolean nextIsStringPat = t[i].startsWith("\"") || t[i].startsWith("*\"");
-                String op;
-                String rawVal;
-                if (nextIsStringPat) {
-                    op     = "=";
-                    rawVal = t[i++];
-                } else {
-                    if (!isOp(t[i])) return invalid("Expected comparison op after WHERE " + field + ", got: " + t[i]);
-                    op = t[i++];
-                    if (i >= t.length) return incomplete(List.of("<value>", "\"<string>\"", "*\"<string>\"*"));
-                    rawVal = t[i++];
-                }
+                if (i >= t.length) return incomplete(opList());
+                if (!isOp(t[i])) return invalid("Expected comparison op after WHERE " + field + ", got: " + t[i]);
+                String op = t[i++];
+                if (i >= t.length) return incomplete(List.of("<value>", "\"<string>\"", "*\"<string>\"*"));
+                String rawVal = t[i++];
                 boolean isStringPattern = rawVal.startsWith("\"") || rawVal.startsWith("*\"");
                 if (isStringPattern) {
                     if (!eq(op, "=")) return invalid("String pattern requires = operator, got: " + op);
