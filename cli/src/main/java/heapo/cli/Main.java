@@ -108,6 +108,15 @@ public final class Main implements Runnable {
         exit / quit / Ctrl-D    leave the REPL
         """;
 
+    static java.util.function.Consumer<String> timedProgress() {
+        long[] last = {System.nanoTime()};
+        return msg -> {
+            long now = System.nanoTime();
+            System.err.printf("[%5.1fs] %s%n", (now - last[0]) / 1e9, msg);
+            last[0] = now;
+        };
+    }
+
     static Path resolveOutDir(Path hprofFile, Path heapDir) {
         return heapDir != null ? heapDir
              : hprofFile.resolveSibling(hprofFile.getFileName() + ".d");
@@ -150,9 +159,10 @@ public final class Main implements Runnable {
             Path outDir = resolveOutDir(hprofFile, heapDir);
             Files.createDirectories(outDir);
 
-            UnpackedHeap heap = Unpacker.unpack(hprofFile, outDir, System.err::println);
+            var progress = timedProgress();
+            UnpackedHeap heap = Unpacker.unpack(hprofFile, outDir, progress);
             var reg = new IndexRegistry(heap);
-            reg.buildAll(System.err::println);
+            reg.buildAll(progress);
 
             Path dbPath = outDir.resolve("sql.db");
             try (var terminal = TerminalBuilder.builder().build();
@@ -533,9 +543,10 @@ public final class Main implements Runnable {
             Path outDir = resolveOutDir(hprofFile, heapDir);
             Files.createDirectories(outDir);
 
-            UnpackedHeap heap = Unpacker.unpack(hprofFile, outDir, System.err::println);
+            var progress = timedProgress();
+            UnpackedHeap heap = Unpacker.unpack(hprofFile, outDir, progress);
             var reg = new IndexRegistry(heap);
-            reg.buildAll(System.err::println);
+            reg.buildAll(progress);
 
             System.out.println("Indexes built: " + outDir.toAbsolutePath());
             return 0;
