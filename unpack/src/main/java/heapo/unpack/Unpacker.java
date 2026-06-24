@@ -46,16 +46,18 @@ public final class Unpacker {
         Files.createDirectories(bitsetDir);
         Files.createDirectories(tempDir);
 
-        Path scratchIdMap       = tempDir.resolve("id-map.bin");
-        Path scratchEdges       = tempDir.resolve("edges.bin");
-        Path scratchClassOfRaw  = tempDir.resolve("class-of-raw.bin");
-        Path primArrayScratch   = tempDir.resolve("prim-array-scratch.bin");
-        Path fieldValuesTempDir = tempDir.resolve("fields-tmp");
+        Path scratchIdMap         = tempDir.resolve("id-map.bin");
+        Path scratchEdges         = tempDir.resolve("edges.bin");
+        Path scratchClassOfRaw    = tempDir.resolve("class-of-raw.bin");
+        Path primArrayScratch     = tempDir.resolve("prim-array-scratch.bin");
+        Path scratchObjArrays     = tempDir.resolve("obj-array-ids.bin");
+        Path scratchPrimArrayTypes = tempDir.resolve("prim-array-types-scratch.bin");
+        Path fieldValuesTempDir   = tempDir.resolve("fields-tmp");
         Files.createDirectories(fieldValuesTempDir);
 
         var handler = new ScanHandler(scratchIdMap, scratchEdges, scratchClassOfRaw,
                                       indexDir.resolve("shallow-size.bin"), fieldValuesTempDir,
-                                      primArrayScratch);
+                                      primArrayScratch, scratchObjArrays, scratchPrimArrayTypes);
         new HprofReader(hprofFile).read(handler);
         handler.closeStreams();
 
@@ -78,8 +80,8 @@ public final class Unpacker {
             buildSuperClassOf(handler.superClasses, indexDir, sortedRawIds, denseIds, objectCount);
             buildGcRoots(handler.gcRootRawIds, handler.gcRootTypes, indexDir,
                          sortedRawIds, denseIds, objectCount);
-            buildIsObjArray(handler.objArrayDenseIds, indexDir, objectCount);
-            buildPrimArrayTypes(handler.primArrayElementTypes, indexDir, objectCount);
+            buildIsObjArray(scratchObjArrays, indexDir, objectCount);
+            buildPrimArrayTypes(scratchPrimArrayTypes, indexDir, objectCount);
 
             // Build field-value index: per-class field files (TYPE_OBJECT + primitives) + schemas
             Path fieldsDir = outputDir.resolve("fields");
@@ -120,9 +122,6 @@ public final class Unpacker {
         final List<Long>      gcRootRawIds = new ArrayList<>();
         final Map<Long, Byte> gcRootTypes  = new HashMap<>();
 
-        final List<Integer>    objArrayDenseIds     = new ArrayList<>();
-        final Map<Integer, Byte> primArrayElementTypes = new HashMap<>();
-
         // Dense ID 0 is reserved as the null sentinel. Real objects start at 1.
         int nextId = 1;
         int classCount = 0;
@@ -132,6 +131,8 @@ public final class Unpacker {
         private final DataOutputStream classOfRawOut;
         private final DataOutputStream shallowSizeOut;
         private final DataOutputStream primArrayScratchOut;
+        private final DataOutputStream objArrayScratchOut;
+        private final DataOutputStream primTypesScratchOut;
 
         // Per-class field value streams: keyed by class dense ID.
         // Scratch records store TYPE_OBJECT as 8-byte raw IDs and primitives as-is.
@@ -141,12 +142,15 @@ public final class Unpacker {
 
         ScanHandler(Path scratchIdMap, Path scratchEdges, Path scratchClassOfRaw,
                     Path shallowSizePath, Path fieldValuesTempDir,
-                    Path primArrayScratch) throws IOException {
+                    Path primArrayScratch, Path objArrayScratch, Path primTypesScratch)
+                throws IOException {
             idMapOut              = dataOut(scratchIdMap);
             edgesOut              = dataOut(scratchEdges);
             classOfRawOut         = dataOut(scratchClassOfRaw);
             shallowSizeOut        = dataOut(shallowSizePath);
             primArrayScratchOut   = dataOut(primArrayScratch);
+            objArrayScratchOut    = dataOut(objArrayScratch);
+            primTypesScratchOut   = dataOut(primTypesScratch);
             this.fieldValuesTempDir = fieldValuesTempDir;
 
             // Dense ID 0 = null sentinel — pre-write placeholder entries
@@ -160,6 +164,8 @@ public final class Unpacker {
             classOfRawOut.close();
             shallowSizeOut.close();
             primArrayScratchOut.close();
+            objArrayScratchOut.close();
+            primTypesScratchOut.close();
             for (DataOutputStream out : fieldValueStreams.values()) out.close();
         }
 
@@ -227,7 +233,7 @@ public final class Unpacker {
             emitIdMap(objectId, denseId);
             classOfRawOut.writeLong(elementClassId);  // approximation: element class ≠ array class
             shallowSizeOut.writeInt(shallowShift(size));
-            objArrayDenseIds.add(denseId);
+            objArrayScratchOut.writeInt(denseId);
             for (long elem : elements) {
                 if (elem != 0) emitEdge(denseId, elem);
             }
@@ -238,7 +244,8 @@ public final class Unpacker {
                 throws IOException {
             int denseId = nextId++;
             int size    = 16 + numElements * HprofReader.primitiveTypeSize(elementType);
-            primArrayElementTypes.put(denseId, (byte) elementType);
+            primTypesScratchOut.writeInt(denseId);
+            primTypesScratchOut.writeByte(elementType);
             emitIdMap(objectId, denseId);
             classOfRawOut.writeLong(0L);  // no class; classOf=0 (null sentinel) = unknown
             shallowSizeOut.writeInt(shallowShift(size));
@@ -655,19 +662,31 @@ public final class Unpacker {
         Files.delete(scratchPath);
     }
 
-    private static void buildIsObjArray(List<Integer> ids, Path indexDir, int objectCount) throws IOException {
-        try (var arr = IndexFile.create(indexDir.resolve("is-obj-array.bin"), objectCount, 1)) {
-            for (int id : ids) if (id >= 0 && id < objectCount) arr.writeByteAt(id, (byte) 1);
-        }
-    }
-
-    private static void buildPrimArrayTypes(Map<Integer, Byte> types, Path indexDir, int objectCount) throws IOException {
-        try (var arr = IndexFile.create(indexDir.resolve("prim-array-types.bin"), objectCount, 1)) {
-            for (var e : types.entrySet()) {
-                int id = e.getKey();
-                if (id >= 0 && id < objectCount) arr.writeByteAt(id, e.getValue());
+    private static void buildIsObjArray(Path scratchPath, Path indexDir, int objectCount) throws IOException {
+        try (var arr = IndexFile.create(indexDir.resolve("is-obj-array.bin"), objectCount, 1);
+             var in  = dataIn(scratchPath)) {
+            while (true) {
+                try {
+                    int id = in.readInt();
+                    if (id >= 0 && id < objectCount) arr.writeByteAt(id, (byte) 1);
+                } catch (EOFException e) { break; }
             }
         }
+        Files.delete(scratchPath);
+    }
+
+    private static void buildPrimArrayTypes(Path scratchPath, Path indexDir, int objectCount) throws IOException {
+        try (var arr = IndexFile.create(indexDir.resolve("prim-array-types.bin"), objectCount, 1);
+             var in  = dataIn(scratchPath)) {
+            while (true) {
+                try {
+                    int  id   = in.readInt();
+                    byte type = in.readByte();
+                    if (id >= 0 && id < objectCount) arr.writeByteAt(id, type);
+                } catch (EOFException e) { break; }
+            }
+        }
+        Files.delete(scratchPath);
     }
 
     // ── Manifest ─────────────────────────────────────────────────────────────

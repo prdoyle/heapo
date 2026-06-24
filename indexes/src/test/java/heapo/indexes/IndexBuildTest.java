@@ -326,6 +326,48 @@ class IndexBuildTest {
         }
     }
 
+    @Test
+    void isObjArrayIsZeroForKnownNonArrayInstances() throws Exception {
+        int fooDenseClassId = findClassDenseId(knownHeap, "heapo/samples/KnownObjects$Foo");
+        assertTrue(fooDenseClassId >= 0, "Should find KnownObjects$Foo");
+        try (var isObjArray = knownReg.openIsObjArray();
+             var il          = knownReg.openInstanceList()) {
+            for (long e = il.start(fooDenseClassId); e < il.end(fooDenseClassId); e++) {
+                int inst = il.edge(e);
+                assertEquals(0, isObjArray.readByteAt(inst),
+                    "Foo instance " + inst + " should not be flagged as an object array");
+            }
+        }
+    }
+
+    @Test
+    void primArrayTypesIsZeroForKnownNonArrayInstances() throws Exception {
+        int fooDenseClassId = findClassDenseId(knownHeap, "heapo/samples/KnownObjects$Foo");
+        assertTrue(fooDenseClassId >= 0, "Should find KnownObjects$Foo");
+        try (var primTypes = knownReg.openPrimArrayTypes();
+             var il         = knownReg.openInstanceList()) {
+            for (long e = il.start(fooDenseClassId); e < il.end(fooDenseClassId); e++) {
+                int inst = il.edge(e);
+                assertEquals(0, primTypes.readByteAt(inst),
+                    "Foo instance " + inst + " should not have a prim-array type");
+            }
+        }
+    }
+
+    @Test
+    void isObjArrayAndPrimArrayTypesAreMutuallyExclusive() throws Exception {
+        try (var isObjArray = knownReg.openIsObjArray();
+             var primTypes  = knownReg.openPrimArrayTypes()) {
+            int objectCount = knownHeap.objectCount();
+            for (int v = 0; v < objectCount; v++) {
+                boolean isObj  = isObjArray.readByteAt(v) != 0;
+                boolean isPrim = primTypes.readByteAt(v)  != 0;
+                assertFalse(isObj && isPrim,
+                    "Object " + v + " is flagged as both obj array and prim array");
+            }
+        }
+    }
+
     // ── Helper: find class dense ID by internal HPROF name ───────────────────
 
     static int findClassDenseId(UnpackedHeap heap, String hprofClassName) throws IOException {
