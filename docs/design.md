@@ -65,7 +65,15 @@ small synthetic dumps.
 bytes). This fits in a signed `int`. Values that overflow after shifting are clamped to
 `Integer.MAX_VALUE` — any object that large is trivially the top retained heap result.
 
-**Retained sizes** can be as large as the full heap — store as `long[]`, no shift.
+HPROF sizes are not JVM heap sizes: `CLASS_DUMP.instanceSize` counts every reference
+field at the identifier width (8 bytes) and omits object headers and alignment, so it
+does not model compressed oops or the JVM's object layout. Object arrays are `16 + 8n`,
+and `java.lang.Class` objects report 0. Sizes are consistent across objects within a
+dump, so they are useful for ranking and comparison, but totals will not reconcile with
+the dump's heap size.
+
+**Retained sizes** can be as large as the full heap, or larger since they sum HPROF
+sizes that can exceed it — store as `long[]`, no shift.
 
 ---
 

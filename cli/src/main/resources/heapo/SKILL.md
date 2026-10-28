@@ -266,6 +266,7 @@ Object reference fields emit `id`, `type`, `retainedSize`, `shallowSize`, and op
 
 - **retainedSize** is the memory freed if the object were collected; it includes all objects exclusively dominated by it. This is the primary metric for leak analysis.
 - **shallowSize** is the object's own field storage only — not what it transitively points to.
+- **Sizes compare objects, not heap usage.** `shallowSize` and `retainedSize` come from HPROF's `instanceSize`, which counts references at 8 bytes and omits headers and padding. They are consistent across objects, so rankings and relative shares are meaningful, but they are not comparable with actual memory figures such as `-Xmx` — totals can exceed the dump's heap size.
 - Convert byte counts to MB (divide by 1 048 576) when presenting to the user.
 - Group findings by root cause (e.g. "two Cache instances together hold 450 MB").
 - For leak analysis: find objects with large retained sizes, then use EXPLAIN to find what is preventing their collection.
