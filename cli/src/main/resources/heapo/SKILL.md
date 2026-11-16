@@ -1,7 +1,7 @@
 ---
 description: Analyse a Java heap dump using heapo. Use when the user wants to explore memory usage, find memory leaks, identify large retained objects, or investigate a JVM heap dump (.hprof file).
-when_to_use: Triggered by phrases like: heap dump, HPROF file, memory leak, OutOfMemoryError, retained size, dominator tree, OOM, what's eating memory, heap analysis, large objects, heap exploration.
-argument-hint: [path/to/dump.hprof]
+when_to_use: "Triggered by phrases like: heap dump, HPROF file, memory leak, OutOfMemoryError, retained size, dominator tree, OOM, what's eating memory, heap analysis, large objects, heap exploration."
+argument-hint: "[path/to/dump.hprof]"
 ---
 
 Analyse the heap dump at `$ARGUMENTS`. If no path was provided, ask the user for it before proceeding.
