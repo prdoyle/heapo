@@ -338,7 +338,7 @@ Priority order:
 8. `EXPLAIN TOP n FROM <name>`
 9. `CLASSES [MATCHING <pattern>]`
 10. `FIELDS <class>`
-11. `STATUS`
+11. `SUMMARY`
 12. `GROUP BY <field> [TOP n BY COUNT|retainedSize]`
 
 For each operation:
