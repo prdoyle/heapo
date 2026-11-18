@@ -1,6 +1,7 @@
 package heapo.query_engine;
 
 import heapo.indexes.CsrReader;
+import heapo.indexes.DfsBuilder;
 import heapo.indexes.IndexRegistry;
 import heapo.util.IndexFile;
 import heapo.model.*;
@@ -117,8 +118,41 @@ public final class QueryEngine {
     }
 
     /**
+     * Computes aggregate counts over the whole dump, including how much of it was unreachable
+     * from any GC root.
+     *
+     * <p>Unreachable objects are mostly found in dumps written without a preceding collection:
+     * {@code HeapDumpOnOutOfMemoryError} does not collect first, while {@code jcmd GC.heap_dump}
+     * does unless {@code -all} is given.
+     */
+    public static Summary summary(UnpackedHeap heap, IndexRegistry registry) throws IOException {
+        int  objectCount      = heap.objectCount();
+        long dumpedBytes      = 0;
+        long reachableBytes   = 0;
+        long reachableObjects = 0;
+
+        try (var shallow = registry.openShallowSize();
+             var dfsNum  = registry.openDfsNum()) {
+            for (int v = 1; v < objectCount; v++) {  // dense ID 0 is the null sentinel
+                long bytes = shallow.readInt(v) * 8L;
+                dumpedBytes += bytes;
+                if (dfsNum.readLong(v) != DfsBuilder.UNREACHABLE) {
+                    reachableObjects++;
+                    reachableBytes += bytes;
+                }
+            }
+        }
+
+        long objects = objectCount - 1L;
+        return new Summary(objects, heap.classCount(),
+                           reachableObjects, objects - reachableObjects,
+                           reachableBytes, dumpedBytes - reachableBytes);
+    }
+
+    /**
      * Walks the idom[] chain from {@code denseId} up to the GC root, returning the path.
      * Index 0 = the queried object; last entry = a direct child of the super-root (no idom).
+     * Objects unreachable from any GC root have no dominator chain and are the sole entry.
      */
     public static List<ExplainNode> explain(UnpackedHeap heap, IndexRegistry registry,
                                              int denseId) throws IOException {
@@ -130,6 +164,7 @@ public final class QueryEngine {
 
         try (var gcRootTypeMap = registry.openGcRootTypeMap();
              var idom          = registry.openIdom();
+             var dfsNum        = registry.openDfsNum();
              var retained      = registry.openRetainedSize();
              var classOf       = registry.openClassOf();
              var fwd           = registry.openForwardRefs()) {
@@ -140,7 +175,10 @@ public final class QueryEngine {
                 int    classDid  = classOf.readInt(cur);
                 String className = names.nameOf(classDid);
                 int    nextCur   = idom.readInt(cur);
-                boolean isGcRoot = nextCur < 0 || nextCur >= heap.objectCount();
+                // idom == -1 means either a direct child of the super-root (a real GC root)
+                // or an object that the DFS never reached; only the DFS can tell them apart.
+                boolean reachable = dfsNum.readLong(cur) != DfsBuilder.UNREACHABLE;
+                boolean isGcRoot  = reachable && (nextCur < 0 || nextCur >= heap.objectCount());
 
                 String description = null;
                 if ("java.lang.Class".equals(className)) {
@@ -149,7 +187,9 @@ public final class QueryEngine {
                 }
                 if ("java.lang.String".equals(className)) hasStrings = true;
 
-                String notes = isGcRoot ? gcRootTypeLabel(gcRootTypeMap, cur) : null;
+                String notes = !reachable ? "not reachable from any GC root"
+                             : isGcRoot   ? gcRootTypeLabel(gcRootTypeMap, cur)
+                             : null;
 
                 long retainedSize = retained.readLong(cur);
                 path.add(new ExplainNode(cur, className, retainedSize, depth++, description, notes, null));
@@ -879,7 +919,8 @@ public final class QueryEngine {
      * {@code name} is not a built-in.
      *
      * <p>Built-in names: {@code GcRoots}, {@code Threads}, {@code ClassLoaders},
-     * {@code SoftReferences}, {@code WeakReferences}, {@code PhantomReferences}.
+     * {@code SoftReferences}, {@code WeakReferences}, {@code PhantomReferences},
+     * {@code Unreachable}.
      * Note: {@code Threads}, {@code ClassLoaders}, and reference types use exact class
      * matching — subclasses are not included.
      */
@@ -909,6 +950,15 @@ public final class QueryEngine {
             case "SoftReferences"   -> buildBitSet(heap, registry, "java.lang.ref.SoftReference");
             case "WeakReferences"   -> buildBitSet(heap, registry, "java.lang.ref.WeakReference");
             case "PhantomReferences"-> buildBitSet(heap, registry, "java.lang.ref.PhantomReference");
+            case "Unreachable" -> {
+                int objectCount = heap.objectCount();
+                BitSet bits = new BitSet(objectCount);
+                try (var dfsNum = registry.openDfsNum()) {
+                    for (int v = 1; v < objectCount; v++)  // dense ID 0 is the null sentinel
+                        if (dfsNum.readLong(v) == DfsBuilder.UNREACHABLE) bits.set(v);
+                }
+                yield bits;
+            }
             default                 -> null;
         };
     }

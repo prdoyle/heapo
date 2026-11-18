@@ -66,6 +66,7 @@ public final class Main implements Runnable {
           i<n>                                    singleton: just object i<n>
           <name>                                  named result or built-in name
           GcRoots / Threads / ClassLoaders / SoftReferences / WeakReferences / PhantomReferences
+          Unreachable
 
         Filters (chain after any source):
           IN <source>                             bitset AND — keep objects in both sets
@@ -91,7 +92,7 @@ public final class Main implements Runnable {
         Other queries:
           TOP <n> [BY retainedSize]               largest-N across all objects (shorthand for ALL TOP <n>)
           SHOW <n> [BY retainedSize]              display-only across all objects
-          STATUS                                  object and class counts
+          SUMMARY                                 counts and reachable/unreachable bytes
           CLASSES <glob>                          classes matching glob, sorted by instance count
           EXPLAIN i<id>                           dominator chain to GC root
 
@@ -311,11 +312,8 @@ public final class Main implements Runnable {
                                                    IndexRegistry reg,
                                                    SessionDb sessionDb) throws IOException, SQLException {
             return switch (q) {
-                case DslParser.StatusQuery ignored ->
-                    // objectCount includes null sentinel at dense ID 0; display real count
-                    toJsonLine(MAPPER.createObjectNode()
-                        .put("objectCount", heap.objectCount() - 1)
-                        .put("classCount", heap.classCount()));
+                case DslParser.SummaryQuery ignored ->
+                    JsonlFormatter.formatSummary(QueryEngine.summary(heap, reg));
 
                 case DslParser.ReadQuery rq -> {
                     String content = QueryEngine.readFull(heap, reg, rq.denseId());

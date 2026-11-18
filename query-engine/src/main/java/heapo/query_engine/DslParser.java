@@ -74,7 +74,7 @@ public final class DslParser {
     public record Pipeline(Source source, List<Filter> filters, Terminal terminal) implements Query {}
 
     // Standalone DSL queries
-    public record StatusQuery()                              implements Query {}
+    public record SummaryQuery()                             implements Query {}
     public record ClassesQuery(String glob)                  implements Query {}  // null = all
     public record ExplainQuery(int denseId)                  implements Query {}
     public record InspectQuery(int denseId)                  implements Query {}
@@ -98,7 +98,7 @@ public final class DslParser {
     private static final List<String> TOP_LEVEL = List.of(
         "ALL", "CLASS", "THAT", "TOP", "SHOW",
         "GcRoots", "Threads", "ClassLoaders", "SoftReferences", "WeakReferences", "PhantomReferences",
-        "STATUS", "CLASSES", "NAMES", "EXPLAIN", "INSPECT", "READ",
+        "Unreachable", "SUMMARY", "CLASSES", "NAMES", "EXPLAIN", "INSPECT", "READ",
         "HISTORY", "CALL", "FORGET", "UNDO"
     );
 
@@ -133,7 +133,7 @@ public final class DslParser {
 
     private static ParseResult parseTop(String[] t) {
         return switch (t[0].toUpperCase()) {
-            case "STATUS"  -> exactly1(t, new StatusQuery());
+            case "SUMMARY" -> exactly1(t, new SummaryQuery());
             case "UNDO"    -> exactly1(t, new UndoQuery());
             case "CLASS"   -> parseClassPipeline(t, 1);
             case "ALL"     -> parsePipeline(new NameSource("All"), t, 1);
@@ -318,7 +318,7 @@ public final class DslParser {
             } else {
                 // Check if the user accidentally used a top-level command as a filter
                 String up = t[i].toUpperCase();
-                if (List.of("INSPECT", "READ", "STATUS", "CLASSES", "NAMES", "EXPLAIN", "UNDO", "HISTORY")
+                if (List.of("INSPECT", "READ", "SUMMARY", "CLASSES", "NAMES", "EXPLAIN", "UNDO", "HISTORY")
                           .contains(up))
                     return invalid(up + " is a standalone command; to inspect an object use INSPECT i<n> directly");
                 return invalid("Expected filter or terminal keyword, got: " + t[i]);

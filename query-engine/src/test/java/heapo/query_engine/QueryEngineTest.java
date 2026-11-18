@@ -2,6 +2,7 @@ package heapo.query_engine;
 
 import heapo.indexes.IndexRegistry;
 import heapo.model.FieldRow;
+import heapo.model.Summary;
 import heapo.model.TopNRow;
 import heapo.unpack.Unpacker;
 import heapo.unpack.UnpackedHeap;
@@ -23,12 +24,21 @@ class QueryEngineTest {
     static UnpackedHeap knownHeap;
     static IndexRegistry knownReg;
 
+    static UnpackedHeap unreachableHeap;
+    static IndexRegistry unreachableReg;
+
     @BeforeAll
     static void setup() throws Exception {
         knownHeap = Unpacker.unpack(samplesDir.resolve("known-objects.hprof"),
                                     Files.createTempDirectory("heapo-qe-known"));
         knownReg  = new IndexRegistry(knownHeap);
         knownReg.buildAll();
+
+        // Dumped with live=false, so it contains objects that are no longer reachable
+        unreachableHeap = Unpacker.unpack(samplesDir.resolve("unreachable-objects.hprof"),
+                                          Files.createTempDirectory("heapo-qe-unreachable"));
+        unreachableReg  = new IndexRegistry(unreachableHeap);
+        unreachableReg.buildAll();
     }
 
     // ── Parser tests ──────────────────────────────────────────────────────────
@@ -96,10 +106,10 @@ class QueryEngineTest {
     }
 
     @Test
-    void parserStatus() {
-        var result = DslParser.parse("STATUS");
+    void parserSummary() {
+        var result = DslParser.parse("SUMMARY");
         assertInstanceOf(DslParser.Complete.class, result);
-        assertInstanceOf(DslParser.StatusQuery.class, ((DslParser.Complete) result).action());
+        assertInstanceOf(DslParser.SummaryQuery.class, ((DslParser.Complete) result).action());
     }
 
     @Test
@@ -214,8 +224,8 @@ class QueryEngineTest {
 
     @Test
     void parserSessionCommands() {
-        assertInstanceOf(DslParser.StatusQuery.class,
-            ((DslParser.Complete) DslParser.parse("STATUS")).action());
+        assertInstanceOf(DslParser.SummaryQuery.class,
+            ((DslParser.Complete) DslParser.parse("SUMMARY")).action());
         assertInstanceOf(DslParser.NamesQuery.class,
             ((DslParser.Complete) DslParser.parse("NAMES")).action());
         assertInstanceOf(DslParser.ThatQuery.class,
@@ -427,5 +437,56 @@ class QueryEngineTest {
         for (int i = 0; i + 1 < path.size(); i++) {
             assertEquals(i + 1, path.get(i + 1).depth());
         }
+    }
+
+    // ── Summary and unreachable objects ──────────────────────────────────────
+
+    @Test
+    void summaryOfLiveDumpIsDominatedByReachableObjects() throws Exception {
+        Summary s = QueryEngine.summary(knownHeap, knownReg);
+
+        assertEquals(knownHeap.objectCount() - 1L, s.objectCount());
+        assertEquals(knownHeap.classCount(), s.classCount());
+        assertEquals(s.objectCount(), s.reachableObjectCount() + s.unreachableObjectCount());
+        assertTrue(s.reachableBytes() > 0, "A live dump should have reachable bytes");
+        // Collecting before the dump reduces dead data but does not guarantee none: liveness
+        // is relative to the GC roots recorded in the dump.
+        assertTrue(s.reachableBytes() > s.unreachableBytes(),
+            "A live dump should be dominated by reachable objects, was unreachable="
+                + s.unreachableBytes() + " reachable=" + s.reachableBytes());
+    }
+
+    @Test
+    void summaryReportsUnreachableObjects() throws Exception {
+        Summary s = QueryEngine.summary(unreachableHeap, unreachableReg);
+
+        assertTrue(s.unreachableObjectCount() > 0, "Sample dump should contain unreachable objects");
+        assertTrue(s.unreachableBytes() > 0, "Unreachable objects should account for some bytes");
+        assertEquals(s.objectCount(), s.reachableObjectCount() + s.unreachableObjectCount());
+        assertTrue(s.unreachableBytes() > s.reachableBytes(),
+            "The sample should be dominated by unreachable objects");
+    }
+
+    @Test
+    void unreachableBuiltinMatchesSummary() throws Exception {
+        Summary s    = QueryEngine.summary(unreachableHeap, unreachableReg);
+        BitSet  bits = QueryEngine.buildBuiltinBitSet(unreachableHeap, unreachableReg, "Unreachable");
+
+        assertEquals(s.unreachableObjectCount(), bits.cardinality());
+        // retained == shallow for unreachable objects, so the sums must agree exactly
+        assertEquals(s.unreachableBytes(),
+                     QueryEngine.aggregateFromBitSet(unreachableHeap, unreachableReg, bits, "SUM"));
+    }
+
+    @Test
+    void explainLabelsUnreachableObjects() throws Exception {
+        BitSet bits = QueryEngine.buildBuiltinBitSet(unreachableHeap, unreachableReg, "Unreachable");
+        int    id   = bits.nextSetBit(1);
+        assertTrue(id > 0, "Expected at least one unreachable object");
+
+        var path = QueryEngine.explain(unreachableHeap, unreachableReg, id);
+        assertEquals(1, path.size(), "Unreachable objects have no dominator chain");
+        assertEquals("not reachable from any GC root", path.get(0).notes(),
+            "Unreachable objects must not be labelled as GC roots");
     }
 }

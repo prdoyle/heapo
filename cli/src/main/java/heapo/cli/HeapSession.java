@@ -113,12 +113,9 @@ public final class HeapSession implements AutoCloseable {
             case DslParser.ExplainNameQuery en   -> handleExplainName(en.name());
 
             // Read-only DSL queries — recorded in history, no THAT side-effect
-            case DslParser.StatusQuery ignored -> {
+            case DslParser.SummaryQuery ignored -> {
                 history.record(rawCmd, System.currentTimeMillis());
-                // objectCount includes null sentinel at dense ID 0; display real count
-                yield toJsonLine(MAPPER.createObjectNode()
-                    .put("objectCount", heap.objectCount() - 1)
-                    .put("classCount", heap.classCount()));
+                yield JsonlFormatter.formatSummary(QueryEngine.summary(heap, registry));
             }
             case DslParser.ReadQuery rq -> {
                 history.record(rawCmd, System.currentTimeMillis());
