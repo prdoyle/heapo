@@ -4,6 +4,7 @@ import heapo.indexes.IndexRegistry;
 import heapo.model.FieldRow;
 import heapo.model.Summary;
 import heapo.model.TopNRow;
+import heapo.unpack.HprofReader;
 import heapo.unpack.Unpacker;
 import heapo.unpack.UnpackedHeap;
 import org.junit.jupiter.api.BeforeAll;
@@ -488,5 +489,60 @@ class QueryEngineTest {
         assertEquals(1, path.size(), "Unreachable objects have no dominator chain");
         assertEquals("not reachable from any GC root", path.get(0).notes(),
             "Unreachable objects must not be labelled as GC roots");
+    }
+
+    // ── Class objects and primitive arrays ──────────────────────────────────
+
+    @Test
+    void primitiveArraysAreClassedAsTheirArrayType() throws Exception {
+        var names = ClassNameIndex.load(knownHeap);
+        int byteArrayClassId = names.resolve("[B");
+        assertTrue(byteArrayClassId >= 0, "The dump should contain a [B array class");
+
+        int checked = 0;
+        try (var primTypes = knownReg.openPrimArrayTypes();
+             var classOf   = knownReg.openClassOf()) {
+            for (int v = 1; v < knownHeap.objectCount(); v++) {
+                if ((primTypes.readByteAt(v) & 0xFF) == HprofReader.TYPE_BYTE) {
+                    assertEquals(byteArrayClassId, classOf.readInt(v),
+                        "byte[] at dense ID " + v + " should be classed as [B");
+                    checked++;
+                }
+            }
+        }
+        assertTrue(checked > 0, "Expected byte arrays in the sample dump");
+    }
+
+    @Test
+    void classQueryFindsPrimitiveArrays() throws Exception {
+        assertTrue(QueryEngine.aggregateCount(knownHeap, knownReg, "[B") > 0,
+            "CLASS [B should find the byte arrays");
+    }
+
+    @Test
+    void inspectOnClassObjectReportsTheClass() throws Exception {
+        var names = ClassNameIndex.load(knownHeap);
+        int stringClassId = names.resolve("java.lang.String");
+        assertTrue(stringClassId >= 0, "java.lang.String class object should be present");
+
+        var rows = QueryEngine.inspect(knownHeap, knownReg, stringClassId);
+        assertEquals(1, rows.size(), "A class object has no instance field data to dump");
+        assertEquals("class", rows.get(0).fieldName());
+        assertEquals("java.lang.String", rows.get(0).description());
+    }
+
+    @Test
+    void classDumpContributesSuperclassAndLoaderEdges() throws Exception {
+        var names = ClassNameIndex.load(knownHeap);
+        int stringClassId = names.resolve("java.lang.String");
+        int objectClassId = names.resolve("java.lang.Object");
+
+        boolean superLinkFound = false;
+        try (var fwd = knownReg.openForwardRefs()) {
+            for (long e = fwd.start(stringClassId); e < fwd.end(stringClassId); e++) {
+                if (fwd.edge(e) == objectClassId) superLinkFound = true;
+            }
+        }
+        assertTrue(superLinkFound, "String.class should reference Object.class from its class dump");
     }
 }

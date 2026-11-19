@@ -23,10 +23,11 @@ public abstract class BaseHprofHandler implements HprofHandler {
     @Override public void gcRootThreadBlock(long objectId, int threadSerial) throws IOException {}
     @Override public void gcRootMonitorUsed(long objectId) throws IOException {}
     @Override public void gcRootThreadObj(long objectId, int threadSerial, int stackSerial) throws IOException {}
-    @Override public void classDump(long classObjectId, long superClassId, int instanceSize,
-                                    long[] fieldNameIds, byte[] fieldTypes) throws IOException {}
+    @Override public void classDump(long classObjectId, long superClassId, long classLoaderId,
+                                    long signersId, long protectionDomainId,
+                                    int instanceSize, long[] fieldNameIds, byte[] fieldTypes) throws IOException {}
     @Override public void staticObjectField(long classObjectId, long nameStringId, long valueRawId) throws IOException {}
     @Override public void instanceDump(long objectId, long classObjectId, byte[] instanceData) throws IOException {}
-    @Override public void objArrayDump(long objectId, long elementClassId, long[] elements) throws IOException {}
+    @Override public void objArrayDump(long objectId, long arrayClassId, long[] elements) throws IOException {}
     @Override public void primArrayDump(long objectId, int elementType, int numElements, byte[] data) throws IOException {}
 }

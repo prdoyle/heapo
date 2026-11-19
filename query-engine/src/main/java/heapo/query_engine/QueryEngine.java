@@ -121,9 +121,10 @@ public final class QueryEngine {
      * Computes aggregate counts over the whole dump, including how much of it was unreachable
      * from any GC root.
      *
-     * <p>Unreachable objects are mostly found in dumps written without a preceding collection:
-     * {@code HeapDumpOnOutOfMemoryError} does not collect first, while {@code jcmd GC.heap_dump}
-     * does unless {@code -all} is given.
+     * <p>Unreachable means "not reachable through the references HPROF records", not "would be
+     * collected": class objects' instance fields are not dumped, and only bootstrap classes are
+     * sticky roots, so a small residue remains even after a full collection. Dumps written
+     * without a preceding collection ({@code HeapDumpOnOutOfMemoryError}) contain far more.
      */
     public static Summary summary(UnpackedHeap heap, IndexRegistry registry) throws IOException {
         int  objectCount      = heap.objectCount();
@@ -260,9 +261,22 @@ public final class QueryEngine {
         return path;
     }
 
+    /**
+     * Returns the fields of the object identified by {@code denseId}.
+     *
+     * <p>HPROF records no instance field values for class objects, so they are reported as a
+     * single row naming the class they represent.
+     */
     public static List<FieldRow> inspect(UnpackedHeap heap, IndexRegistry registry, int denseId)
             throws IOException {
         var names = ClassNameIndex.load(heap);
+
+        String representedClass = names.nameOf(denseId);
+        if (!"?".equals(representedClass)) {
+            return List.of(new FieldRow("class", -1, false, null, -1, -1,
+                                        representedClass, "java.lang.Class", 0));
+        }
+
         try (var isObjArrayFile = registry.openIsObjArray();
              var primTypesFile  = registry.openPrimArrayTypes()) {
 
