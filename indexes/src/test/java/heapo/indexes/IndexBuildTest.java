@@ -379,7 +379,8 @@ class IndexBuildTest {
             @Override public void loadClass(int s, long classObjectId, long nameId) {
                 classNames.put(classObjectId, nameId);
             }
-            @Override public void classDump(long cid, long sup, int size, long[] fn, byte[] ft) {
+            @Override public void classDump(long cid, long sup, long loader, long signers,
+                                            long protectionDomain, int size, long[] fn, byte[] ft) {
                 Long nameId = classNames.get(cid);
                 if (nameId != null && hprofClassName.equals(strings.get(nameId)))
                     classRawId = cid;

@@ -51,6 +51,23 @@ class UnpackerTest {
         assertTrue(text.contains("objectCount"), "manifest should contain objectCount");
     }
 
+    @Test
+    void staleManifestIsRebuilt() throws Exception {
+        Path hprof = samplesDir.resolve("known-objects.hprof");
+        Path dir   = Files.createTempDirectory("heapo-stale-manifest");
+        var  original = Unpacker.unpack(hprof, dir);
+
+        Path manifest = dir.resolve("manifest.json");
+        String json = Files.readString(manifest)
+            .replaceFirst("\"formatVersion\": \\d+", "\"formatVersion\": 0")
+            .replaceFirst("\"objectCount\": \\d+", "\"objectCount\": 123");
+        Files.writeString(manifest, json);
+
+        var rebuilt = Unpacker.unpack(hprof, dir);
+        assertEquals(original.objectCount(), rebuilt.objectCount(),
+            "A manifest with an unknown format version must trigger a rebuild");
+    }
+
     // ── class-of.bin ─────────────────────────────────────────────────────────
 
     @Test
@@ -201,7 +218,9 @@ class UnpackerTest {
             @Override public void loadClass(int s, long classObjectId, long nameStringId) {
                 classNameIds.put(classObjectId, nameStringId);
             }
-            @Override public void classDump(long classObjectId, long superClassId, int instanceSize,
+            @Override public void classDump(long classObjectId, long superClassId, long classLoaderId,
+                                            long signersId, long protectionDomainId,
+                                            int instanceSize,
                                             long[] fieldNameIds, byte[] fieldTypes) {
                 Long nameId = classNameIds.get(classObjectId);
                 if (nameId == null) return;

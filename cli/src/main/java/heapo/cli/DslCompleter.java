@@ -24,7 +24,7 @@ final class DslCompleter implements Completer {
 
     private static final List<String> BUILTIN_NAMES = List.of(
         "GcRoots", "Threads", "ClassLoaders",
-        "SoftReferences", "WeakReferences", "PhantomReferences"
+        "SoftReferences", "WeakReferences", "PhantomReferences", "Unreachable"
     );
 
     private final UnpackedHeap heap;

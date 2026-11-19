@@ -16,6 +16,13 @@ Two sources: general brainstorming and real Elasticsearch heap dump investigatio
 - Duplicate strings / redundant data
 - Too many instances of a class
 
+### OOM triage
+- OOM with a small live set — allocation churn rather than retention
+- How much of the dump is unreachable from any GC root? (`SUMMARY`)
+- Was the dump taken without a collection? (`HeapDumpOnOutOfMemoryError` vs `jcmd GC.heap_dump`)
+- Humongous objects — large short-lived buffers allocated as whole regions
+- Correlate with the GC log and the OOM message
+
 ### Collection health
 - Oversized collections (HashMap with 1M entries)
 - Sparse collections (HashMap 5% full)

@@ -43,7 +43,7 @@ Progress is printed to stderr. Once it exits, indexes are cached on disk and sub
 
 ```bash
 heapo open --output jsonl DUMP << 'EOF'
-STATUS
+SUMMARY
 SHOW 10 BY retainedSize
 EOF
 ```
@@ -56,7 +56,7 @@ Replace `DUMP` with the actual path to the `.hprof` file in all commands below.
 
 ```bash
 heapo open --output jsonl DUMP << 'EOF'
-STATUS
+SUMMARY
 CLASSES heapo.*
 EOF
 ```
@@ -146,6 +146,7 @@ The result is stored as a bitset in THAT. `TOP N` truncates THAT to the N larges
 | `SoftReferences` | All `java.lang.ref.SoftReference` instances |
 | `WeakReferences` | All `java.lang.ref.WeakReference` instances |
 | `PhantomReferences` | All `java.lang.ref.PhantomReference` instances |
+| `Unreachable` | Objects not reachable from any GC root (mostly dumps taken without a preceding collection; a few percent remain even after one) |
 
 A source is itself composable — filters chain to form a new source:
 ```
@@ -202,7 +203,7 @@ i1234 TOP 1                                        # THAT becomes just i1234 (us
 
 | Query | Returns |
 |---|---|
-| `STATUS` | Object and class count |
+| `SUMMARY` | Object and class counts, plus reachable and unreachable bytes |
 | `CLASSES <glob>` | Classes matching glob, sorted by instance count (use `*` for all) |
 | `NAMES [<glob>]` | Named results; glob filters by name (omit for all) |
 | `EXPLAIN <name>` | Show which history command produced the named result (provenance) |
@@ -262,14 +263,35 @@ Object reference fields emit `id`, `type`, `retainedSize`, `shallowSize`, and op
 {"className":"(pipeline)","func":"SUM","retainedSize":41943040}
 ```
 
+**SUMMARY** (`reachableBytes` and `unreachableBytes` use the same size model as the fields above):
+```json
+{"objectCount":142931,"classCount":1798,"reachableObjectCount":140415,"unreachableObjectCount":2516,"reachableBytes":2352536,"unreachableBytes":74544120}
+```
+
 ## Analysis guidelines
 
 - **retainedSize** is the memory freed if the object were collected; it includes all objects exclusively dominated by it. This is the primary metric for leak analysis.
 - **shallowSize** is the object's own field storage only — not what it transitively points to.
 - **Sizes compare objects, not heap usage.** `shallowSize` and `retainedSize` come from HPROF's `instanceSize`, which counts references at 8 bytes and omits headers and padding. They are consistent across objects, so rankings and relative shares are meaningful, but they are not comparable with actual memory figures such as `-Xmx` — totals can exceed the dump's heap size.
 - Convert byte counts to MB (divide by 1 048 576) when presenting to the user.
+- **Unreachable objects are not in the dominator tree.** Their `retainedSize` equals their `shallowSize`, objects they reference are not grouped under them, and `EXPLAIN` stops at them with a `not reachable from any GC root` note. Use `Unreachable` to select them.
 - Group findings by root cause (e.g. "two Cache instances together hold 450 MB").
 - For leak analysis: find objects with large retained sizes, then use EXPLAIN to find what is preventing their collection.
+
+## Interpreting an out-of-memory error
+
+A dump describes object memory, not allocation behaviour: it records no allocation rate, no heap occupancy, and nothing comparable to `-Xmx`. Gather what context you can — how the dump was produced, the OOM message, `-Xmx`, collector, GC log — and state which of these are unknown. Missing context is normal; do not block on it.
+
+**A small dump does not mean the heap was healthy.** A heap can die of allocation pressure while holding very little live data. If the OOM was `Java heap space` and the dump is small, say so rather than reporting "no leak found".
+
+**Whether a collection preceded the dump changes what is in it.** `HeapDumpOnOutOfMemoryError` dumps without collecting first, so it captures objects that nothing can reach; `jcmd GC.heap_dump` collects first and dumps live objects only, unless `-all` is given. `SUMMARY` reports both footprints.
+
+- Most of the dump unreachable → allocation pressure. The heap was full of objects nobody could reach.
+- Most of the dump reachable → retention. Use `TOP BY retainedSize` and `EXPLAIN` to find the holder.
+
+**Confirm with the GC log.** Allocation-rate failures show `G1 Humongous Allocation` as the GC cause, rising `Humongous regions:` counts, `to-space exhausted`, or `Evacuation Failure`, often ending in `Pause Full`. Objects larger than half a G1 region (1MB below roughly a 2GB heap) are humongous, allocated as whole regions, so churning through short-lived buffers can exhaust a heap that is mostly free.
+
+A collection before the dump reduces `unreachableBytes` but does not guarantee zero, and `unreachableBytes` does not mean "the collector would free this". It counts objects not reachable through the references HPROF records, and HPROF drops some: a class object's instance fields are never written (so `Class.reflectionData` caches can look unreachable), and class mirrors outside the bootstrap loader are not GC roots. Expect a few percent even after a full collection; judge by proportion, not by the presence of any unreachable bytes.
 
 ## Presenting conclusions
 

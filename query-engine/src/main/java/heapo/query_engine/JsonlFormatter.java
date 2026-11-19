@@ -25,6 +25,10 @@ public final class JsonlFormatter {
 
     private record ClassJson(String id, String className, long instanceCount) {}
 
+    private record SummaryJson(long objectCount, int classCount,
+                               long reachableObjectCount, long unreachableObjectCount,
+                               long reachableBytes, long unreachableBytes) {}
+
     private record ExplainJson(int depth, String id, String type, String field,
                                long retainedSize, String description, String notes) {}
 
@@ -57,6 +61,13 @@ public final class JsonlFormatter {
             sb.append('\n');
         }
         return sb.toString();
+    }
+
+    public static String formatSummary(Summary s) throws IOException {
+        return MAPPER.writeValueAsString(new SummaryJson(
+            s.objectCount(), s.classCount(),
+            s.reachableObjectCount(), s.unreachableObjectCount(),
+            s.reachableBytes(), s.unreachableBytes())) + "\n";
     }
 
     public static String formatExplain(List<ExplainNode> path) throws IOException {

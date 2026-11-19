@@ -313,7 +313,9 @@ public final class HprofReader {
             fieldTypes[i] = (byte) in.readUnsignedByte();
         }
 
-        h.classDump(classObjectId, superClassId, instanceSize, fieldNameIds, fieldTypes);
+        h.classDump(classObjectId, superClassId, classLoaderObjectId,
+                    signersObjectId, protectionDomainId,
+                    instanceSize, fieldNameIds, fieldTypes);
         // Fire static object refs after classDump so handlers have the dense ID available
         if (staticObjectRefs != null) {
             for (int i = 0; i < staticObjectCount; i++) {
@@ -337,12 +339,12 @@ public final class HprofReader {
         long objectId = readId(in, idSize);
         int stackSerial = in.readInt();
         int numElements = in.readInt();
-        long elementClassId = readId(in, idSize);
+        long arrayClassId = readId(in, idSize);
         long[] elements = new long[numElements];
         for (int i = 0; i < numElements; i++) {
             elements[i] = readId(in, idSize);
         }
-        h.objArrayDump(objectId, elementClassId, elements);
+        h.objArrayDump(objectId, arrayClassId, elements);
     }
 
     private void readPrimArrayDump(CountingInputStream in, HprofHandler h) throws IOException {

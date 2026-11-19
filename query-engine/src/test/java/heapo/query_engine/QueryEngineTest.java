@@ -2,7 +2,9 @@ package heapo.query_engine;
 
 import heapo.indexes.IndexRegistry;
 import heapo.model.FieldRow;
+import heapo.model.Summary;
 import heapo.model.TopNRow;
+import heapo.unpack.HprofReader;
 import heapo.unpack.Unpacker;
 import heapo.unpack.UnpackedHeap;
 import org.junit.jupiter.api.BeforeAll;
@@ -23,12 +25,21 @@ class QueryEngineTest {
     static UnpackedHeap knownHeap;
     static IndexRegistry knownReg;
 
+    static UnpackedHeap unreachableHeap;
+    static IndexRegistry unreachableReg;
+
     @BeforeAll
     static void setup() throws Exception {
         knownHeap = Unpacker.unpack(samplesDir.resolve("known-objects.hprof"),
                                     Files.createTempDirectory("heapo-qe-known"));
         knownReg  = new IndexRegistry(knownHeap);
         knownReg.buildAll();
+
+        // Dumped with live=false, so it contains objects that are no longer reachable
+        unreachableHeap = Unpacker.unpack(samplesDir.resolve("unreachable-objects.hprof"),
+                                          Files.createTempDirectory("heapo-qe-unreachable"));
+        unreachableReg  = new IndexRegistry(unreachableHeap);
+        unreachableReg.buildAll();
     }
 
     // ── Parser tests ──────────────────────────────────────────────────────────
@@ -96,10 +107,10 @@ class QueryEngineTest {
     }
 
     @Test
-    void parserStatus() {
-        var result = DslParser.parse("STATUS");
+    void parserSummary() {
+        var result = DslParser.parse("SUMMARY");
         assertInstanceOf(DslParser.Complete.class, result);
-        assertInstanceOf(DslParser.StatusQuery.class, ((DslParser.Complete) result).action());
+        assertInstanceOf(DslParser.SummaryQuery.class, ((DslParser.Complete) result).action());
     }
 
     @Test
@@ -214,8 +225,8 @@ class QueryEngineTest {
 
     @Test
     void parserSessionCommands() {
-        assertInstanceOf(DslParser.StatusQuery.class,
-            ((DslParser.Complete) DslParser.parse("STATUS")).action());
+        assertInstanceOf(DslParser.SummaryQuery.class,
+            ((DslParser.Complete) DslParser.parse("SUMMARY")).action());
         assertInstanceOf(DslParser.NamesQuery.class,
             ((DslParser.Complete) DslParser.parse("NAMES")).action());
         assertInstanceOf(DslParser.ThatQuery.class,
@@ -427,5 +438,111 @@ class QueryEngineTest {
         for (int i = 0; i + 1 < path.size(); i++) {
             assertEquals(i + 1, path.get(i + 1).depth());
         }
+    }
+
+    // ── Summary and unreachable objects ──────────────────────────────────────
+
+    @Test
+    void summaryOfLiveDumpIsDominatedByReachableObjects() throws Exception {
+        Summary s = QueryEngine.summary(knownHeap, knownReg);
+
+        assertEquals(knownHeap.objectCount() - 1L, s.objectCount());
+        assertEquals(knownHeap.classCount(), s.classCount());
+        assertEquals(s.objectCount(), s.reachableObjectCount() + s.unreachableObjectCount());
+        assertTrue(s.reachableBytes() > 0, "A live dump should have reachable bytes");
+        // Collecting before the dump reduces dead data but does not guarantee none: liveness
+        // is relative to the GC roots recorded in the dump.
+        assertTrue(s.reachableBytes() > s.unreachableBytes(),
+            "A live dump should be dominated by reachable objects, was unreachable="
+                + s.unreachableBytes() + " reachable=" + s.reachableBytes());
+    }
+
+    @Test
+    void summaryReportsUnreachableObjects() throws Exception {
+        Summary s = QueryEngine.summary(unreachableHeap, unreachableReg);
+
+        assertTrue(s.unreachableObjectCount() > 0, "Sample dump should contain unreachable objects");
+        assertTrue(s.unreachableBytes() > 0, "Unreachable objects should account for some bytes");
+        assertEquals(s.objectCount(), s.reachableObjectCount() + s.unreachableObjectCount());
+        assertTrue(s.unreachableBytes() > s.reachableBytes(),
+            "The sample should be dominated by unreachable objects");
+    }
+
+    @Test
+    void unreachableBuiltinMatchesSummary() throws Exception {
+        Summary s    = QueryEngine.summary(unreachableHeap, unreachableReg);
+        BitSet  bits = QueryEngine.buildBuiltinBitSet(unreachableHeap, unreachableReg, "Unreachable");
+
+        assertEquals(s.unreachableObjectCount(), bits.cardinality());
+        // retained == shallow for unreachable objects, so the sums must agree exactly
+        assertEquals(s.unreachableBytes(),
+                     QueryEngine.aggregateFromBitSet(unreachableHeap, unreachableReg, bits, "SUM"));
+    }
+
+    @Test
+    void explainLabelsUnreachableObjects() throws Exception {
+        BitSet bits = QueryEngine.buildBuiltinBitSet(unreachableHeap, unreachableReg, "Unreachable");
+        int    id   = bits.nextSetBit(1);
+        assertTrue(id > 0, "Expected at least one unreachable object");
+
+        var path = QueryEngine.explain(unreachableHeap, unreachableReg, id);
+        assertEquals(1, path.size(), "Unreachable objects have no dominator chain");
+        assertEquals("not reachable from any GC root", path.get(0).notes(),
+            "Unreachable objects must not be labelled as GC roots");
+    }
+
+    // ── Class objects and primitive arrays ──────────────────────────────────
+
+    @Test
+    void primitiveArraysAreClassedAsTheirArrayType() throws Exception {
+        var names = ClassNameIndex.load(knownHeap);
+        int byteArrayClassId = names.resolve("[B");
+        assertTrue(byteArrayClassId >= 0, "The dump should contain a [B array class");
+
+        int checked = 0;
+        try (var primTypes = knownReg.openPrimArrayTypes();
+             var classOf   = knownReg.openClassOf()) {
+            for (int v = 1; v < knownHeap.objectCount(); v++) {
+                if ((primTypes.readByteAt(v) & 0xFF) == HprofReader.TYPE_BYTE) {
+                    assertEquals(byteArrayClassId, classOf.readInt(v),
+                        "byte[] at dense ID " + v + " should be classed as [B");
+                    checked++;
+                }
+            }
+        }
+        assertTrue(checked > 0, "Expected byte arrays in the sample dump");
+    }
+
+    @Test
+    void classQueryFindsPrimitiveArrays() throws Exception {
+        assertTrue(QueryEngine.aggregateCount(knownHeap, knownReg, "[B") > 0,
+            "CLASS [B should find the byte arrays");
+    }
+
+    @Test
+    void inspectOnClassObjectReportsTheClass() throws Exception {
+        var names = ClassNameIndex.load(knownHeap);
+        int stringClassId = names.resolve("java.lang.String");
+        assertTrue(stringClassId >= 0, "java.lang.String class object should be present");
+
+        var rows = QueryEngine.inspect(knownHeap, knownReg, stringClassId);
+        assertEquals(1, rows.size(), "A class object has no instance field data to dump");
+        assertEquals("class", rows.get(0).fieldName());
+        assertEquals("java.lang.String", rows.get(0).description());
+    }
+
+    @Test
+    void classDumpContributesSuperclassAndLoaderEdges() throws Exception {
+        var names = ClassNameIndex.load(knownHeap);
+        int stringClassId = names.resolve("java.lang.String");
+        int objectClassId = names.resolve("java.lang.Object");
+
+        boolean superLinkFound = false;
+        try (var fwd = knownReg.openForwardRefs()) {
+            for (long e = fwd.start(stringClassId); e < fwd.end(stringClassId); e++) {
+                if (fwd.edge(e) == objectClassId) superLinkFound = true;
+            }
+        }
+        assertTrue(superLinkFound, "String.class should reference Object.class from its class dump");
     }
 }

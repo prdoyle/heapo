@@ -206,7 +206,7 @@ Subcomponents:
   ops first, O(k) field ops last), estimates build time and warns if >30s
 - *Pipeline executor* — drives sources, filters, transformations, and output terminals
 - *SQL router* — detects `SELECT`/`WITH` prefix, delegates to SQLite via session
-- *Session command handlers* — EXPLAIN, CLASSES, FIELDS, DESCRIBE, STATUS, HELP, UNDO
+- *Session command handlers* — EXPLAIN, CLASSES, FIELDS, DESCRIBE, SUMMARY, HELP, UNDO
 
 ### `cli`
 Hides JLine3, picocli, and output format details.

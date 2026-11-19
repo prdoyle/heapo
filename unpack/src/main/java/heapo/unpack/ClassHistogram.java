@@ -52,8 +52,8 @@ public final class ClassHistogram {
         }
 
         @Override
-        public void objArrayDump(long objectId, long elementClassId, long[] elements) {
-            counts.merge(objectId, 1L, Long::sum); // count the array itself under its class
+        public void objArrayDump(long objectId, long arrayClassId, long[] elements) {
+            counts.merge(arrayClassId, 1L, Long::sum); // count the array itself under its class
         }
 
         @Override

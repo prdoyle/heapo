@@ -124,8 +124,9 @@ public final class Unpacker {
             builder.add(nameStringId);
         }
 
-        @Override public void classDump(long classObjectId, long superClassId, int instanceSize,
-                                        long[] fieldNameIds, byte[] fieldTypes) {
+        @Override public void classDump(long classObjectId, long superClassId, long classLoaderId,
+                                        long signersId, long protectionDomainId,
+                                        int instanceSize, long[] fieldNameIds, byte[] fieldTypes) {
             for (long id : fieldNameIds) builder.add(id);
         }
 
@@ -154,6 +155,9 @@ public final class Unpacker {
 
         // Detected in loadClass (LOAD_CLASS records precede HEAP_DUMP in the file)
         long javaLangClassRawId = 0;
+        // Raw class object IDs of the primitive array classes, indexed by element type code.
+        // PRIM_ARRAY_DUMP records carry no class ID, so the class has to be looked up by name.
+        private final long[] primArrayClassRawIds = new long[12];
 
         final List<Long>      gcRootRawIds = new ArrayList<>();
         final Map<Long, Byte> gcRootTypes  = new HashMap<>();
@@ -219,11 +223,14 @@ public final class Unpacker {
             String name = strings.getOrDefault(nameStringId, "?");
             classNames.put(classObjectId, name);
             if ("java/lang/Class".equals(name)) javaLangClassRawId = classObjectId;
+            int primType = primitiveArrayClassType(name);
+            if (primType > 0) primArrayClassRawIds[primType] = classObjectId;
         }
 
         @Override
-        public void classDump(long classObjectId, long superClassId, int instanceSize,
-                              long[] fieldNameIds, byte[] fieldTypes) throws IOException {
+        public void classDump(long classObjectId, long superClassId, long classLoaderId,
+                              long signersId, long protectionDomainId,
+                              int instanceSize, long[] fieldNameIds, byte[] fieldTypes) throws IOException {
             int denseId = nextId++;
             currentClassDenseId = denseId;
             classCount++;
@@ -241,6 +248,12 @@ public final class Unpacker {
             // Class objects are instances of java.lang.Class
             classOfRawOut.writeLong(javaLangClassRawId);
             shallowSizeOut.writeInt(0);  // class object shallow size not available in HPROF
+            // Class objects have no INSTANCE_DUMP record, so the references carried by the
+            // CLASS_DUMP record itself would otherwise be lost from the graph.
+            if (superClassId        != 0) emitEdge(denseId, superClassId);
+            if (classLoaderId       != 0) emitEdge(denseId, classLoaderId);
+            if (signersId           != 0) emitEdge(denseId, signersId);
+            if (protectionDomainId  != 0) emitEdge(denseId, protectionDomainId);
         }
 
         // Set in classDump; used by the immediately-following staticObjectField callbacks
@@ -266,11 +279,11 @@ public final class Unpacker {
         }
 
         @Override
-        public void objArrayDump(long objectId, long elementClassId, long[] elements) throws IOException {
+        public void objArrayDump(long objectId, long arrayClassId, long[] elements) throws IOException {
             int denseId = nextId++;
             int size    = 16 + elements.length * idSize();
             emitIdMap(objectId, denseId);
-            classOfRawOut.writeLong(elementClassId);  // approximation: element class ≠ array class
+            classOfRawOut.writeLong(arrayClassId);
             shallowSizeOut.writeInt(shallowShift(size));
             objArrayScratchOut.writeInt(denseId);
             for (long elem : elements) {
@@ -286,7 +299,7 @@ public final class Unpacker {
             primTypesScratchOut.writeInt(denseId);
             primTypesScratchOut.writeByte(elementType);
             emitIdMap(objectId, denseId);
-            classOfRawOut.writeLong(0L);  // no class; classOf=0 (null sentinel) = unknown
+            classOfRawOut.writeLong(primArrayClassRawIds[elementType]);  // 0 if the class is absent
             shallowSizeOut.writeInt(shallowShift(size));
             primArrayScratchOut.writeInt(denseId);
             primArrayScratchOut.writeInt(data.length);
@@ -308,6 +321,21 @@ public final class Unpacker {
         private void addRoot(long rawId, int type) {
             gcRootRawIds.add(rawId);
             gcRootTypes.putIfAbsent(rawId, (byte) type);
+        }
+
+        /** Returns the HPROF primitive type code for a primitive array class name, or 0. */
+        private static int primitiveArrayClassType(String slashedName) {
+            return switch (slashedName) {
+                case "[Z" -> HprofReader.TYPE_BOOLEAN;
+                case "[C" -> HprofReader.TYPE_CHAR;
+                case "[F" -> HprofReader.TYPE_FLOAT;
+                case "[D" -> HprofReader.TYPE_DOUBLE;
+                case "[B" -> HprofReader.TYPE_BYTE;
+                case "[S" -> HprofReader.TYPE_SHORT;
+                case "[I" -> HprofReader.TYPE_INT;
+                case "[J" -> HprofReader.TYPE_LONG;
+                default   -> 0;
+            };
         }
 
         // ── Helpers ─────────────────────────────────────────────────────────────
@@ -730,9 +758,13 @@ public final class Unpacker {
 
     // ── Manifest ─────────────────────────────────────────────────────────────
 
+    /** Bumped whenever the unpacked index contents change, so cached indexes are rebuilt. */
+    private static final int INDEX_FORMAT_VERSION = 2;
+
     private static UnpackedHeap tryLoadManifest(Path outputDir, Path manifestPath) {
         try {
             String json = Files.readString(manifestPath);
+            if (extractJsonInt(json, "formatVersion") != INDEX_FORMAT_VERSION) return null;
             int objectCount = extractJsonInt(json, "objectCount");
             int classCount  = extractJsonInt(json, "classCount");
             return new UnpackedHeap(outputDir, objectCount, classCount);
@@ -756,12 +788,13 @@ public final class Unpacker {
         String fingerprint = computeFingerprint(hprofFile);
         String json = """
                 {
+                  "formatVersion": %d,
                   "hprofFingerprint": "%s",
                   "objectCount": %d,
                   "classCount": %d,
                   "idWidth": 32
                 }
-                """.formatted(fingerprint, objectCount, classCount);
+                """.formatted(INDEX_FORMAT_VERSION, fingerprint, objectCount, classCount);
         Files.writeString(manifestPath, json);
     }
 

@@ -718,6 +718,19 @@ class HeapSessionTest {
     }
 
     @Test
+    void summaryReportsCountsAndReachability() throws Exception {
+        Path p = tempRoot.resolve("summary.db");
+        try (var session = new HeapSession(heap, registry, p)) {
+            String result = session.execute("SUMMARY");
+            assertFalse(result.contains("\"error\""), "SUMMARY should succeed: " + result);
+            assertTrue(result.contains("\"objectCount\":"), "Summary must report objectCount");
+            assertTrue(result.contains("\"classCount\":"), "Summary must report classCount");
+            assertTrue(result.contains("\"reachableBytes\":"), "Summary must report reachableBytes");
+            assertTrue(result.contains("\"unreachableBytes\":"), "Summary must report unreachableBytes");
+        }
+    }
+
+    @Test
     void dominatorSubtreeReturnsDescendants() throws Exception {
         Path p = tempRoot.resolve("dominator.db");
         try (var session = new HeapSession(heap, registry, p)) {
