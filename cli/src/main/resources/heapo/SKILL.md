@@ -146,7 +146,7 @@ The result is stored as a bitset in THAT. `TOP N` truncates THAT to the N larges
 | `SoftReferences` | All `java.lang.ref.SoftReference` instances |
 | `WeakReferences` | All `java.lang.ref.WeakReference` instances |
 | `PhantomReferences` | All `java.lang.ref.PhantomReference` instances |
-| `Unreachable` | Objects not reachable from any GC root (mostly present in dumps taken without a preceding collection) |
+| `Unreachable` | Objects not reachable from any GC root (mostly dumps taken without a preceding collection; a few percent remain even after one) |
 
 A source is itself composable — filters chain to form a new source:
 ```
@@ -291,7 +291,7 @@ A dump describes object memory, not allocation behaviour: it records no allocati
 
 **Confirm with the GC log.** Allocation-rate failures show `G1 Humongous Allocation` as the GC cause, rising `Humongous regions:` counts, `to-space exhausted`, or `Evacuation Failure`, often ending in `Pause Full`. Objects larger than half a G1 region (1MB below roughly a 2GB heap) are humongous, allocated as whole regions, so churning through short-lived buffers can exhaust a heap that is mostly free.
 
-A collection before the dump reduces `unreachableBytes` but does not guarantee zero: it counts objects not reachable from the GC roots recorded in the dump, which can include a small amount of dead data even in a nominally live dump.
+A collection before the dump reduces `unreachableBytes` but does not guarantee zero, and `unreachableBytes` does not mean "the collector would free this". It counts objects not reachable through the references HPROF records, and HPROF drops some: a class object's instance fields are never written (so `Class.reflectionData` caches can look unreachable), and class mirrors outside the bootstrap loader are not GC roots. Expect a few percent even after a full collection; judge by proportion, not by the presence of any unreachable bytes.
 
 ## Presenting conclusions
 
